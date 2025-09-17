@@ -45,18 +45,17 @@ Email: deryk.l.clary.mil@usmc.mil
 Date: 2025-09-16
 """
 
+# TODO: Implement window constraints
+# TODO: Make button with example file download
+# TODO: Make help page
 
-# app.py
+# Import statements
 import io
-import math
-from itertools import product
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 import seaborn as sns
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 from matplotlib.ticker import MaxNLocator
 import io
 import zipfile
@@ -651,14 +650,14 @@ def plot_fuel(result_df, generator_name):
 # ---------------------
 st.set_page_config(layout="wide", page_title="ECU Selection Optimizer")
 
-st.title("ECU Selection Optimizer — Streamlit")
+st.title("ECU Selection Optimizer")
 
 st.markdown("""
-Upload your HVAC CSV (multi-table / wide format) and your ECU catalog (ECUSpecs.csv).
-Then choose weights and press **Solve MILP**.
+Upload your HVAC CSV (output from AutoDISE) and your ECU catalog (spreadsheet with all the available ECUs).
+Then choose weights and press **Optimize**.
 """)
-hvac_file = st.file_uploader("Upload HVAC CSV (HVAC24Profile...csv). This is the file output from AutoDISE.", type=["csv"], key="hvac")
-catalog_file = st.file_uploader("Upload ECU Specifications CSV. This is the file with the specifications of each ECU that's available.", type=["csv"], key="catalog")
+hvac_file = st.file_uploader("Upload HVAC CSV (HVAC24Profile...csv).", type=["csv"], key="hvac")
+catalog_file = st.file_uploader("Upload ECU Specifications CSV.", type=["csv"], key="catalog")
 
 # Sliders
 st.sidebar.header("Set Weights")
@@ -668,8 +667,18 @@ w_weight = st.sidebar.slider("Weight", 0, 5, 1, step=1)
 w_size = st.sidebar.slider("Size", 0, 5, 1, step=1)
 btu_penalty = st.sidebar.slider("BTU Penalty", 0, 5, 1, step=1)
 
+# Make sidebar for help page
+with st.sidebar.expander("Getting Started"):
+    st.markdown("""
+    1. Upload HVAC & ECU CSVs  
+    2. Adjust weights to your preference
+    3. Click Optimize  
+    4. View/download results
+    """)
+
 if hvac_file and catalog_file:
-    # read uploaded csvs
+    
+    # Read uploaded csvs
     try:
         tidy_hvac = read_multiple_tables(hvac_file)
     except Exception as e:
@@ -695,6 +704,8 @@ if hvac_file and catalog_file:
 
     # Add true/false column for window unit compatibility
     targets["Window Unit Compatibility"] = True
+
+    st.success("File upload success.")
 
     # Make columns in app
     col1, col2 = st.columns(2)
@@ -774,16 +785,16 @@ if hvac_file and catalog_file:
         fuel_result_df = st.session_state["fuel_result_df"]
 
         # Display solution except normalized columns
-        st.success("Solved MILP")
-        st.markdown("### Solution per Shelter")
+        st.success("Solution success.")
+        st.markdown("### Solution Overview")
         st.markdown("The ECU_Mix column shows the type and number of ECUs that are optimal based on the user-input weights.")
         st.dataframe(sol_df.drop(["Cost_Norm", "Power_Norm", "Weight_Norm", "Size_Norm", "Penalty_Norm"], axis=1), hide_index=True)
 
         # Calculate fuel consumption
         st.markdown("### Fuel Consumption Metrics "
-                    '<span style="color:gray;" title="Only generators that were capable of handling the electrical load of the ECUs at the maximum BTU event are shown. ' \
-                    'These values are all calculated using only the maximum electrical load from the ECUs. No additional electrical loads are plugged into the generators.">ⓘ</span>',
+                    '<span style="color:gray;" title="These values are all calculated using only the maximum electrical load from the ECUs. No additional electrical loads are plugged into the generators.">ⓘ</span>',
                     unsafe_allow_html=True)
+        st.markdown("Only generators that were capable of handling the electrical load of the ECUs are shown.")
         fuel_result_df = calc_fuel(sol_df, gen_spec_df)
 
         # Show result, drop generators with all na (not capable of producing enough power)
@@ -791,17 +802,18 @@ if hvac_file and catalog_file:
         display_df.columns = [f"{shelter} - {metric}" for shelter, metric in display_df.columns]
         st.dataframe(display_df.round(2), use_container_width=True)
 
+        # Plotting area
+        st.subheader("Plots")
+
         # --- Generator selection ---
         selected_gen = None
-        selected_gen = st.selectbox("Select Generator To Plot", options=display_df.index.tolist())
+        selected_gen = st.selectbox("Select Generator To Plot (this only affects the first plot below)", 
+                                    options=display_df.index.tolist())
  
         if selected_gen is not None:
             fig_fuel = plot_fuel(fuel_result_df, selected_gen)
             st.pyplot(fig_fuel)
         fuel_result_df = fuel_result_df.dropna(how='all')  # Drop generators that can't hack it
-
-        # Plotting area
-        st.subheader("Plots")
 
         # Melted setup
         melted = tidy_hvac.melt(
@@ -847,12 +859,12 @@ if hvac_file and catalog_file:
             with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                 sol_df.to_excel(writer, index=False, sheet_name="Solution")
                 fuel_result_df.to_excel(writer, index=True, sheet_name="Fuel Consumption")
-                slider_df.to_excel(writer, index=False, sheet_name="UserWeights")
+                slider_df.to_excel(writer, index=False, sheet_name="User Weights")
             zip_file.writestr(f"ECU_Opt_Output_{date_str}.xlsx", excel_buffer.getvalue())
             
 
             # Save plots as PNG
-            # Fuel Plots for each generator # TODO
+            # Fuel Plots for each generator
             for gen in list(fuel_result_df.index.values):
                 fig_fuel = plot_fuel(fuel_result_df, gen)
                 buffer_fuel=io.BytesIO()
@@ -888,8 +900,19 @@ if hvac_file and catalog_file:
 
 
 else:
-    st.info("Upload both an HVAC CSV and ECUSpecs CSV to continue.")
+    st.info("Upload both an HVAC file from AutoDISE and ECU Specifications file to continue.")
 
+# About me blurb
+st.markdown("---")  # horizontal rule
+st.markdown(
+    """
+    #### About  
+    This app was developed by **Captain Deryk Clary**, the Operations Research Analyst at the **USMC Expeditionary Energy Office (E2O)**.  
+    
+    🌐 Website: https://www.cdi.marines.mil/Units/CDD/Marine-Corps-Expeditionary-Energy-Office/  
+    📧 Contact: *deryk.l.clary.mil(at)usmc.mil*  
+    """
+)
 
 # # Final graph (can't figure out how to debug, so took it out)
 # shelter_container = st.empty()
