@@ -38,6 +38,7 @@ Features:
 
 Usage:
     $ streamlit run ecu_app.py
+    Also deployed online at ecuoptimizationtool.streamlit.app
 
 Author: Capt Deryk Clary
 Office: Expeditionary Energy Office
@@ -45,9 +46,7 @@ Email: deryk.l.clary.mil@usmc.mil
 Date: 2025-09-16
 """
 
-# TODO: Implement window constraints
-# TODO: Make button with example file download
-# TODO: Make help page
+# TODO: Implement window unit constraints
 
 # Import statements
 import io
@@ -86,9 +85,6 @@ def read_multiple_tables(f):
     current_shelter = None
     current_header = None
     current_subtable = None
-    current_source = None
-
-    first = True
 
     for line in f:
         stripped = line.decode("utf-8").strip().strip(",")\
@@ -230,7 +226,7 @@ def optimize_ecu_mix_normalized(
     shelter_names = shelters[shelter_col].astype(str).tolist()
     S = len(shelter_names)
 
-    cat = catalog_df[["Model", "CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size"]].copy()
+    cat = catalog_df[["Model", "CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size", "Window Mount"]].copy()
     cat["Model"] = cat["Model"].astype(str)
     models = cat["Model"].tolist()
     M = len(models)
@@ -298,6 +294,18 @@ def optimize_ecu_mix_normalized(
         rows.append(row)
         ub.append(target)
 
+    # (3) window unit compatibility
+    for s_idx, s_name in enumerate(shelter_names):
+        compatible = bool(targets_df.loc[targets_df[shelter_col] == s_name, "Window Unit Compatibility"].iloc[0])
+        if not compatible:
+            for m_idx, m in enumerate(models):
+                if bool(cat.loc[cat["Model"] == m, "Window Mount"].iloc[0]):
+                    row = np.zeros(n_vars)
+                    row[idx_x(s_idx, m_idx)] = 1.0
+                    rows.append(row)
+                    ub.append(0.0)
+
+    # Now build LinearConstraint
     A = np.vstack(rows)
     lc = LinearConstraint(A, lb=-np.inf * np.ones(A.shape[0]), ub=np.array(ub, dtype=float))
     bounds = Bounds(lb=np.zeros(n_vars), ub=np.full(n_vars, np.inf))
@@ -361,7 +369,6 @@ def optimize_ecu_mix_normalized(
 # ---------------------
 # Fuel consumption helper
 # ---------------------
-
 # --- Function to estimate fuel consumption at any load ---
 def fuel_at_load(gen_row, load_kw, data_complete=True):
     max_kw = gen_row["Max Power (kW)"]
@@ -388,7 +395,6 @@ def calc_fuel(shelters_df, gens_df):
     power_factor = 0.8  # Power factor for USMC generators
 
     # --- Build result DataFrame ---
-    # result_df = pd.DataFrame(index=gens_df["Generator Name"])
     all_results = {}
 
     for _, shelter in shelters_df.iterrows():
@@ -409,9 +415,6 @@ def calc_fuel(shelters_df, gens_df):
                 runtime_col.append(gen["Fuel Capacity (gal)"] / fuel_per_hr)
         
         # Add two columns per shelter
-        # result_df[f"{shelter_name} Fuel Consumption (gal/hr)"] = fuel_col
-        # result_df[f"{shelter_name} Runtime (hr)"] = runtime_col
-
         all_results[(shelter_name, "Fuel Consumption (gal/hr)")] = fuel_col
         all_results[(shelter_name, "Runtime (hr)")] = runtime_col
 
@@ -445,7 +448,6 @@ def plot_temperature_with_hvac(melted, shelter_name, title_suffix=None):
         x="Hour",
         y="Value",
         hue="RowName",
-        # dodge=True,
         palette="muted"
     )
 
@@ -473,7 +475,7 @@ def plot_target_vs_achieved(solution_df, melted):
     solution = solution_df.copy()
     if "TotalBTU" not in solution.columns:
         solution["TotalBTU"] = solution["AchievedBTU"]
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(12, 5))
 
     # Compute max HVAC load per shelter from palm_hvac_df
     max_loads = (
@@ -518,6 +520,7 @@ def plot_target_vs_achieved(solution_df, melted):
     # Add bar labels, suppress output
     _ = [ax.bar_label(container, fontsize=10) for container in ax.containers]
 
+    fig.tight_layout()
     return fig
 
 
@@ -530,7 +533,7 @@ def plot_solution_metrics(solution_df):
     ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
     plt.title(f"Value of Normalized Parameters in Objective Function Per Shelter")
 
-    handles, labels = ax.get_legend_handles_labels()
+    handles, _ = ax.get_legend_handles_labels()
     custom_labels = ["Cost", "Power", "Weight", "Size", "BTU Penalty"]
 
     # Shrink and move legend
@@ -551,7 +554,7 @@ def plot_solution_metrics(solution_df):
             fontsize=10
         )
 
-    # fig.tight_layout()
+    fig.tight_layout()
     return fig
 
 
@@ -591,7 +594,7 @@ def plot_fuel(result_df, generator_name):
     
     # --- Prepare data ---
     # Extract unique shelters from the MultiIndex tuples
-    unique_shelters = sorted(set([shel for shel, metric in gen_row.columns]), key=lambda x: list(gen_row.columns.get_level_values(0)).index(x))
+    unique_shelters = sorted(set([shel for shel, _ in gen_row.columns]), key=lambda x: list(gen_row.columns.get_level_values(0)).index(x))
 
     fuel_values = [gen_row[(shel, "Fuel Consumption (gal/hr)")].values[0] for shel in unique_shelters]
     runtime_values = [gen_row[(shel, "Runtime (hr)")].values[0] for shel in unique_shelters]
@@ -604,7 +607,7 @@ def plot_fuel(result_df, generator_name):
     runtime_color = "#d98b5f" # orange
     
     # --- Create figure ---
-    fig, ax1 = plt.subplots(figsize=(12,5))
+    fig, ax1 = plt.subplots(figsize=(12,5.6))
     
     # Left axis: Fuel
     bars1 = ax1.bar([i - width/2 for i in x], fuel_values, width=width, color=fuel_color, label="Fuel (gal/hr)")
@@ -640,9 +643,8 @@ def plot_fuel(result_df, generator_name):
     ax1.legend(handles=legend_handles, loc="lower left", bbox_to_anchor=(1.03,0.0), ncol=1)
     
     ax1.set_title(f"Fuel and Runtime per Shelter for {generator_name}")
-    plt.tight_layout()
+    fig.tight_layout()
     return fig
-
 
 
 # ---------------------
@@ -656,22 +658,58 @@ st.markdown("""
 Upload your HVAC CSV (output from AutoDISE) and your ECU catalog (spreadsheet with all the available ECUs).
 Then choose weights and press **Optimize**.
 """)
-hvac_file = st.file_uploader("Upload HVAC CSV (HVAC24Profile...csv).", type=["csv"], key="hvac")
-catalog_file = st.file_uploader("Upload ECU Specifications CSV.", type=["csv"], key="catalog")
+hvac_file = st.file_uploader("**Upload :green[AutoDISE Output] (HVAC24Profile...csv):**", type=["csv"], key="hvac")
+catalog_file = st.file_uploader("**Upload :blue[ECU Specifications File]:**", type=["csv"], key="catalog")
+
+# Download example buttons
+# Example CSV file paths (relative to your app)
+ecu_example_file = Path("Inputs/ECUSpecs.csv")
+hvac_example_file = Path("Inputs/HVAC24HourProfile_Palms_Custom.csv")
+
+# Read files into memory
+with open(ecu_example_file, "rb") as f:
+    ecu_bytes = f.read()
+
+with open(hvac_example_file, "rb") as f:
+    hvac_bytes = f.read()
+
+
+if hvac_file is None or catalog_file is None:
+    col3, col4 = st.columns([1, 2])
+    with col3:
+        st.download_button(
+            label="Download Example ECU Specifications",
+            data=ecu_bytes,
+            file_name="ECU_Specs_Example.csv",
+            mime="text/csv"
+        )
+    with col4:
+        st.download_button(
+            label="Download Example AutoDISE Output",
+            data=hvac_bytes,
+            file_name="HVAC_Profile_Example.csv",
+            mime="text/csv"
+        )
 
 # Sliders
 st.sidebar.header("Set Weights")
+st.sidebar.markdown("Click Optimize after changing weights.")
 w_cost = st.sidebar.slider("Cost", 0, 5, 1, step=1)
 w_power = st.sidebar.slider("Power", 0, 5, 1, step=1)
 w_weight = st.sidebar.slider("Weight", 0, 5, 1, step=1)
 w_size = st.sidebar.slider("Size", 0, 5, 1, step=1)
 btu_penalty = st.sidebar.slider("BTU Penalty", 0, 5, 1, step=1)
 
-# Make sidebar for help page
+# ---------------------
+# Help Page
+# ---------------------
+# Getting started drop down
 with st.sidebar.expander("Getting Started"):
     st.markdown("""
-    1. Upload HVAC & ECU CSVs  
+    1. Upload HVAC & ECU files  
     2. Adjust weights to your preference
+        - Higher number = more important to minimize
+    3. Select which shelters can accept window-mounted ECUs
     3. Click Optimize  
     4. View/download results
     """)
@@ -706,6 +744,7 @@ if hvac_file and catalog_file:
     targets["Window Unit Compatibility"] = True
 
     st.success("File upload success.")
+    st.markdown("---")  # horizontal rule
 
     # Make columns in app
     col1, col2 = st.columns(2)
@@ -715,7 +754,7 @@ if hvac_file and catalog_file:
         st.markdown("### Target BTU and Window Compatibility "
                     '<span style="color:gray;" title="These are the maximum BTU loads for each shelter. These values are extracted from the file you uploaded from AutoDISE.">ⓘ</span>',
                     unsafe_allow_html=True)
-        st.markdown("Select whether each shelter is compatible with window ECU units.")
+        st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
         targets = st.data_editor(targets, hide_index=True, disabled=["ShelterName", "TargetBTU"])
 
     # read catalog
@@ -755,7 +794,7 @@ if hvac_file and catalog_file:
     st.markdown("### Generator Catalog "
                 '<span style="color:gray;" title="These are all the generators loaded into the tool.">ⓘ</span>',
                  unsafe_allow_html=True)
-    st.markdown("These generators are loaded from a background file.")
+    st.markdown("These generators are loaded from a background file. The 'XX\% Load' columns indicate the number of gallons per hour each generator burns at the percentage of electrical load.")
     try:
         gen_spec_df = pd.read_csv(Path("Inputs/GeneratorSpecs.csv"))
     except Exception as e:
@@ -786,6 +825,7 @@ if hvac_file and catalog_file:
 
         # Display solution except normalized columns
         st.success("Solution success.")
+        st.markdown("---")  # horizontal rule
         st.markdown("### Solution Overview")
         st.markdown("The ECU_Mix column shows the type and number of ECUs that are optimal based on the user-input weights.")
         st.dataframe(sol_df.drop(["Cost_Norm", "Power_Norm", "Weight_Norm", "Size_Norm", "Penalty_Norm"], axis=1), hide_index=True)
@@ -803,16 +843,22 @@ if hvac_file and catalog_file:
         st.dataframe(display_df.round(2), use_container_width=True)
 
         # Plotting area
+        st.markdown("---")  # horizontal rule
         st.subheader("Plots")
 
         # --- Generator selection ---
         selected_gen = None
-        selected_gen = st.selectbox("Select Generator To Plot (this only affects the first plot below)", 
+        selected_gen = st.selectbox("**Select Generator To Plot (this only affects the first plot below):**", 
                                     options=display_df.index.tolist())
+        
+        # Make columns for graphs
+        col5, col6 = st.columns(2)
  
+        # Display fuel plot
         if selected_gen is not None:
             fig_fuel = plot_fuel(fuel_result_df, selected_gen)
-            st.pyplot(fig_fuel)
+            with col5:
+                st.pyplot(fig_fuel)
         fuel_result_df = fuel_result_df.dropna(how='all')  # Drop generators that can't hack it
 
         # Melted setup
@@ -831,15 +877,18 @@ if hvac_file and catalog_file:
 
         # Target vs Achieved
         fig_tva = plot_target_vs_achieved(sol_df, melted)
-        st.pyplot(fig_tva)
+        with col5:
+            st.pyplot(fig_tva)
 
         # Solution metrics
         fig_metrics = plot_solution_metrics(sol_df)
-        st.pyplot(fig_metrics)
+        with col6:
+            st.pyplot(fig_metrics)
 
         # ECU mix
         fig_mix = plot_ecu_mix(sol_df)
-        st.pyplot(fig_mix)
+        with col6:
+            st.pyplot(fig_mix)
 
         # Download files
         date_str = datetime.now().strftime("%Y%m%d")
@@ -890,29 +939,140 @@ if hvac_file and catalog_file:
             buffer_mix.seek(0)
             zip_file.writestr(f"ECU_Mix_Plot_{date_str}.png", buffer_mix.read())
 
+        # Download button
         zip_buffer.seek(0)
         st.download_button(
-            label="Download Tables and Plots (zip)",
+            label="📁 Download Tables and Plots (zip)",
             data=zip_buffer,
             file_name=f"ECU_Solution_{date_str}.zip",
-            mime="application/zip"
+            mime="application/zip",
+            type="primary"
         )
-
 
 else:
     st.info("Upload both an HVAC file from AutoDISE and ECU Specifications file to continue.")
 
-# About me blurb
+# Help section
 st.markdown("---")  # horizontal rule
-st.markdown(
-    """
-    #### About  
-    This app was developed by **Captain Deryk Clary**, the Operations Research Analyst at the **USMC Expeditionary Energy Office (E2O)**.  
-    
-    🌐 Website: https://www.cdi.marines.mil/Units/CDD/Marine-Corps-Expeditionary-Energy-Office/  
-    📧 Contact: *deryk.l.clary.mil(at)usmc.mil*  
-    """
-)
+with st.expander(":question: Help"):
+    st.markdown(
+        '''
+        ### How To Use This Tool
+        1. :blue[**Upload Your Data**]
+           - Upload the *ECU Specifications file*.
+                - It **must** include the following six columns: 
+                    - `Unit (ECU)`: The ECU's name
+                    - `Cooling Capacity (BTU/hr)`
+                    - `Cooling Load (kVA)`
+                    - `Cost`
+                    - `Weight (lbs)`
+                    - `Size (ft3)`
+                    - `Window Mount`: Whether the ECU is window-mounted (True/False)
+                - You should input all the information for each ECU you want to include in the calculation into this file.
+           - Upload the *HVAC Analysis file* (must be exported from AutoDISE). To export the correct data:
+                - Build out your shelter(s) and environment in AutoDISE.
+                - Go to the "HVAC Analysis" Tab.
+                - Go to the "24 Hour Profiles" Tab.
+                - In the left sidebar, select the box next to each of your shelters (only select your shelters, **not ECUs**).
+                - Click "Export Checked Items" and download the file.
+                - *If the downloaded file is a .xls file*, you will not be able to use it on a MCEN computer. Go to the Excel web app at https://excel.cloud.microsoft/.
+                    - Sign in to your Microsoft account.
+                    - Upload and open the .xls file you just downloaded on the web app.
+                    - Go to "File" :arrow_right: "Export" :arrow_right: "Export as CSV UTF-8" and download the file.
+           - :green[Both files should be .csv files before uploading.]
+
+           
+        2. :blue[**Set Optimization Weights**]
+           - Use the sliders in the sidebar to adjust the weight (0–5) of:
+             - **Cost**: The total procurement cost of the ECUs.
+             - **Power**: The total power usage of the ECUs when running.
+             - **Weight**: The total weight of the ECUs.
+             - **Size**: The total size (ft³) of the ECUs.
+             - **BTU Penalty**: Penalty for exceeding shelter heat load requirements)
+           - These weights are used to score the prospective mixes of ECUs. The solution becomes the mixture that scores the best for each shelter.
+             - :green[A higher number means it is more important to minimize.]
+
+           
+        3. :blue[**Optimize**]
+           - Click the **Optimize** button to run the optimization.
+           - The solver will determine the best mix of ECUs to optimally satisfy the shelter heat loads.
+
+           
+        4. :blue[**Review Results**]
+           - A per-shelter summary is displayed.
+           - The optimal ECU mix for each shelter is shown in the far right column.
+
+           
+        5. :blue[**Visualize**]
+           - Explore the automatically generated plots:
+             - Fuel consumption by generator
+             - Shelter heat loads (observed vs. achieved)
+             - Objective contributions (cost, power, etc.)
+             - ECU allocations per shelter (number and type of ECU)
+
+             
+        6. :blue[**Download**]
+           - Export all results as .xlsx files and .png images using the download button at the bottom of the page.
+           - All the generated tables will be in separate tabs within a single Excel file.
+
+        ---
+        💡 **Tip:** If you don’t have your own data, you can use the example files available for download above.
+        '''
+    )
+
+
+# Open formulation file
+formulation_file = Path("MILP Formulation.pdf")
+with open(formulation_file, "rb") as f:
+    formulation_bytes = f.read()
+
+# Information expander
+with st.expander(":information_source: Information"):
+    st.markdown(
+        """
+        1. :blue[**Goal**]  
+            - The goal of this tool is to help Capability Integration Officers figure out what the requirements for the future Environmental Control Units (ECUs) for the Marine Corps are. 
+            - This includes how many BTUs they need to produce and how many should be assigned to each echelon in the USMC.
+        
+        2. :blue[**Problem Formulation**]  
+        """
+    )
+    st.download_button("Click here to download the problem formulation sheet",
+                       data=formulation_bytes,
+                       file_name="ECU_Optimization_Formulation.pdf",
+                       mime="text/pdf")
+    st.markdown(
+        """
+        3. :blue[**Assumptions**]  
+            - BTU Algorithm
+                - The heat load due to electrical equipment in a shelter is simply the total power load of all consumers in that shelter, in Watts, converted to BTU/hour.
+                - Other assumptions and equations detailed in AutoDISE User Manual (available on the app).
+            - Equipment
+                - Equipment with a max operating temperature/humidity less than the environmental values require climate control.
+                - Power factor = 0.8 for generators, ECUs = 1.0. This is the factor of power load that gets converted to real power.
+                - Equipment is always turned on day/night.
+                - The fuel consumption rate is calculated off of a linear interpolation using the electrical load and the known fuel burn rates. The tool therefore assumes the fuel consumption rate is linear between each known load percentage.
+          
+        4. :blue[**Limitations**]
+            - AutoDISE doesn't account for setting up your shelters in the shade.
+                - There is an option in AutoDISE that allows you to put cammie netting over your shelter. That could be an interim solution to mimic shady environments.
+            - Information on actual gear used by different COC echelons varies based on SOP.
+            - Acquisition, maintenance, and lifecycle costs of ECUs are not currently accounted for in the cost function due to data availability.
+                - You may add add any associated costs into the total in the "cost" column of the uploaded ECU specifications file and it will then be accounted for.
+            - This tool only optimizes for the maximum BTU load the shelter experiences in the AutoDISE simulation. It does not account for the entire 24 hour profile due to the complexity of the problem.
+        """
+    )
+
+# About me blurb
+with st.expander("🪖 About The Developer"):
+    st.markdown(
+        """
+        This app was developed by **Captain Deryk Clary**, the Operations Research Analyst at the **USMC Expeditionary Energy Office (E2O)**.  
+        
+        🌐 Website: https://www.cdi.marines.mil/Units/CDD/Marine-Corps-Expeditionary-Energy-Office/  
+        📧 Contact: *deryk.l.clary.mil(at)usmc.mil*  
+        """
+    )
 
 # # Final graph (can't figure out how to debug, so took it out)
 # shelter_container = st.empty()
