@@ -755,7 +755,7 @@ if hvac_file and catalog_file:
                     '<span style="color:gray;" title="These are the maximum BTU loads for each shelter. These values are extracted from the file you uploaded from AutoDISE.">ⓘ</span>',
                     unsafe_allow_html=True)
         st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
-        targets = st.data_editor(targets, hide_index=True, disabled=["ShelterName", "TargetBTU"])
+        targets = st.data_editor(targets.set_index('ShelterName'), disabled=["ShelterName", "TargetBTU"])
 
     # read catalog
     catalog = pd.read_csv(catalog_file)
@@ -788,7 +788,7 @@ if hvac_file and catalog_file:
     with col2:
         st.subheader("ECU Catalog")
         st.markdown("All ECUs loaded from ECU Specifications file uploaded above.")
-        st.dataframe(catalog, hide_index=True)
+        st.dataframe(catalog.set_index('Model'))
 
     # Load and show generator specs
     st.markdown("### Generator Catalog "
@@ -800,7 +800,7 @@ if hvac_file and catalog_file:
     except Exception as e:
             st.error(f"Could not load generator specifications from file. Please ensure 'GeneratorSpecs.csv' is placed in the Inputs folder. \n\n {e}")
             st.stop()
-    st.dataframe(gen_spec_df, hide_index=True)
+    st.dataframe(gen_spec_df.set_index('Generator Name'))
 
     # Init solve button
     solve_button = st.button("Optimize", type="primary")
@@ -828,7 +828,7 @@ if hvac_file and catalog_file:
         st.markdown("---")  # horizontal rule
         st.markdown("### Solution Overview")
         st.markdown("The ECU_Mix column shows the type and number of ECUs that are optimal based on the user-input weights.")
-        st.dataframe(sol_df.drop(["Cost_Norm", "Power_Norm", "Weight_Norm", "Size_Norm", "Penalty_Norm"], axis=1), hide_index=True)
+        st.dataframe(sol_df.drop(["Cost_Norm", "Power_Norm", "Weight_Norm", "Size_Norm", "Penalty_Norm"], axis=1).set_index('Shelter'))
 
         # Calculate fuel consumption
         st.markdown("### Fuel Consumption Metrics "
