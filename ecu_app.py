@@ -61,6 +61,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 import matplotlib.patches as mpatches
+import random
 
 # MILP tools
 from scipy.optimize import milp, LinearConstraint, Bounds
@@ -187,11 +188,16 @@ def extract_targets_from_hvac_df(tidy_wide: pd.DataFrame, shelter_col="ShelterNa
     df_rows = tmp.loc[mask, [shelter_col] + hour_cols].copy()
     if df_rows.empty:
         # try contains
-        mask = tmp["RowName"].astype(str).str.contains("Shelter HVAC Heat Load", case=False, na=False)
+        mask = tmp["RowName"].astype(str).str.contains("Shelter HVAC Heat Load", 
+                                                       case=False, 
+                                                       na=False)
         df_rows = tmp.loc[mask, [shelter_col] + hour_cols].copy()
 
     # melt and compute peak per shelter
-    long = df_rows.melt(id_vars=[shelter_col], value_vars=hour_cols, var_name="Hour", value_name="BTU")
+    long = df_rows.melt(id_vars=[shelter_col], 
+                        value_vars=hour_cols, 
+                        var_name="Hour", 
+                        value_name="BTU")
     long = long.dropna(subset=["BTU"])
     target = long.groupby(shelter_col, as_index=False)["BTU"].max().rename(columns={"BTU": "TargetBTU"})
     # ensure numeric target
@@ -226,7 +232,8 @@ def optimize_ecu_mix_normalized(
     shelter_names = shelters[shelter_col].astype(str).tolist()
     S = len(shelter_names)
 
-    cat = catalog_df[["Model", "CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size", "Window Mount"]].copy()
+    cat = catalog_df[["Model", "CapacityBTU", "PowerKW", "CostUSD", 
+                      "Weight", "Size", "Window Mount"]].copy()
     cat["Model"] = cat["Model"].astype(str)
     models = cat["Model"].tolist()
     M = len(models)
@@ -296,7 +303,8 @@ def optimize_ecu_mix_normalized(
 
     # (3) window unit compatibility
     for s_idx, s_name in enumerate(shelter_names):
-        compatible = bool(targets_df.loc[targets_df[shelter_col] == s_name, "Window Unit Compatibility"].iloc[0])
+        compatible = bool(targets_df.loc[targets_df[shelter_col] == s_name, 
+                                         "Window Unit Compatibility"].iloc[0])
         if not compatible:
             for m_idx, m in enumerate(models):
                 if bool(cat.loc[cat["Model"] == m, "Window Mount"].iloc[0]):
@@ -307,7 +315,9 @@ def optimize_ecu_mix_normalized(
 
     # Now build LinearConstraint
     A = np.vstack(rows)
-    lc = LinearConstraint(A, lb=-np.inf * np.ones(A.shape[0]), ub=np.array(ub, dtype=float))
+    lc = LinearConstraint(A, 
+                          lb=-np.inf * np.ones(A.shape[0]), 
+                          ub=np.array(ub, dtype=float))
     bounds = Bounds(lb=np.zeros(n_vars), ub=np.full(n_vars, np.inf))
 
     integrality = np.zeros(n_vars, dtype=int)
@@ -433,10 +443,14 @@ def plot_temperature_with_hvac(melted, shelter_name, title_suffix=None):
     fig, ax1 = plt.subplots(figsize=(12, 5))
  
     hvac_load_df = melted[(melted["RowName"] == "Shelter HVAC Heat Load") & 
-                        (melted["ShelterName"] == shelter_name)].drop_duplicates(subset=("ShelterName", "Hour"))
+                        (melted["ShelterName"] == shelter_name)]\
+                            .drop_duplicates(subset=("ShelterName", "Hour"))
     hvac_load_df["Hour"] = hvac_load_df["Hour"] - 1
     source_df = melted[melted["RowName"].isin(["Structure", "Ventilation", 
-                                            "Personnel", "Electrical"])].drop_duplicates(subset=['Hour', 'RowName', 'ShelterName'])
+                                            "Personnel", "Electrical"])]\
+                                                .drop_duplicates(subset=['Hour', 
+                                                                         'RowName', 
+                                                                         'ShelterName'])
     source_df = source_df[source_df['ShelterName'] == shelter_name]
 
     sns.set_theme(style="whitegrid", palette="muted")
@@ -528,8 +542,16 @@ def plot_solution_metrics(solution_df):
     df = solution_df.copy()
     fig, ax = plt.subplots(figsize=(12, 5))
     metrics = ["Cost_Norm", "Power_Norm", "Weight_Norm", "Size_Norm", "Penalty_Norm"]
-    melted = df.melt(id_vars=["Shelter"], value_vars=metrics, var_name="Metric", value_name="Value")
-    sns.barplot(data=melted, x="Shelter", y="Value", hue="Metric", ax=ax, palette="muted")
+    melted = df.melt(id_vars=["Shelter"], 
+                     value_vars=metrics, 
+                     var_name="Metric", 
+                     value_name="Value")
+    sns.barplot(data=melted, 
+                x="Shelter", 
+                y="Value", 
+                hue="Metric", 
+                ax=ax, 
+                palette="muted")
     ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
     plt.title(f"Value of Normalized Parameters in Objective Function Per Shelter")
 
@@ -572,11 +594,19 @@ def plot_ecu_mix(solution_df):
         return fig
     mix_df = pd.DataFrame(rows)
     fig, ax = plt.subplots(figsize=(12, 5))
-    sns.barplot(data=mix_df, x="Shelter", y="Qty", hue="Model", ax=ax, palette="muted")
+    sns.barplot(data=mix_df, 
+                x="Shelter", 
+                y="Qty", 
+                hue="Model", 
+                ax=ax, 
+                palette="muted")
 
     plt.title(f"Number of ECUs by Type Per Shelter")
     plt.ylabel("Quantity")
-    ax.legend(title="ECU Name", loc="lower left", title_fontsize=9, bbox_to_anchor=(1.01,0.0))
+    ax.legend(title="ECU Name", 
+              loc="lower left", 
+              title_fontsize=9, 
+              bbox_to_anchor=(1.01,0.0))
     ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
     # Set the y-axis major locator to MaxNLocator with integer=True
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
@@ -594,10 +624,13 @@ def plot_fuel(result_df, generator_name):
     
     # --- Prepare data ---
     # Extract unique shelters from the MultiIndex tuples
-    unique_shelters = sorted(set([shel for shel, _ in gen_row.columns]), key=lambda x: list(gen_row.columns.get_level_values(0)).index(x))
+    unique_shelters = sorted(set([shel for shel, _ in gen_row.columns]), 
+                             key=lambda x: list(gen_row.columns.get_level_values(0)).index(x))
 
-    fuel_values = [gen_row[(shel, "Fuel Consumption (gal/hr)")].values[0] for shel in unique_shelters]
-    runtime_values = [gen_row[(shel, "Runtime (hr)")].values[0] for shel in unique_shelters]
+    fuel_values = [gen_row[(shel, "Fuel Consumption (gal/hr)")].values[0] 
+                   for shel in unique_shelters]
+    runtime_values = [gen_row[(shel, "Runtime (hr)")].values[0] 
+                      for shel in unique_shelters]
     
     x = range(len(unique_shelters))
     width = 0.35
@@ -610,7 +643,11 @@ def plot_fuel(result_df, generator_name):
     fig, ax1 = plt.subplots(figsize=(12,5.6))
     
     # Left axis: Fuel
-    bars1 = ax1.bar([i - width/2 for i in x], fuel_values, width=width, color=fuel_color, label="Fuel (gal/hr)")
+    bars1 = ax1.bar([i - width/2 for i in x], 
+                    fuel_values, 
+                    width=width, 
+                    color=fuel_color, 
+                    label="Fuel (gal/hr)")
     ax1.set_ylabel("Fuel (gal/hr)")
     ax1.set_xlabel("Shelter")
     ax1.set_xticks(x)
@@ -619,17 +656,31 @@ def plot_fuel(result_df, generator_name):
     # Label bars
     for bar in bars1:
         height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2, height + 0.01*max(fuel_values), f"{height:.2f}", ha='center', va='bottom', fontsize=9)
+        ax1.text(bar.get_x() + bar.get_width()/2, 
+                 height + 0.01*max(fuel_values), 
+                 f"{height:.2f}", 
+                 ha='center', 
+                 va='bottom', 
+                 fontsize=9)
     
     # Right axis: Runtime
     ax2 = ax1.twinx()
-    bars2 = ax2.bar([i + width/2 for i in x], runtime_values, width=width, color=runtime_color, label="Runtime (hr)")
+    bars2 = ax2.bar([i + width/2 for i in x], 
+                    runtime_values, 
+                    width=width, 
+                    color=runtime_color, 
+                    label="Runtime (hr)")
     ax2.set_ylabel("Runtime (hours)")
     
     # Label bars
     for bar in bars2:
         height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2, height + 0.01*max(runtime_values), f"{height:.2f}", ha='center', va='bottom', fontsize=9)
+        ax2.text(bar.get_x() + bar.get_width()/2, 
+                 height + 0.01*max(runtime_values), 
+                 f"{height:.2f}", 
+                 ha='center', 
+                 va='bottom', 
+                 fontsize=9)
     
     # Remove right axis grid
     ax2.grid(False)
@@ -640,12 +691,25 @@ def plot_fuel(result_df, generator_name):
         mpatches.Patch(color=runtime_color, label="Runtime on Single Tank of Gas")
     ]
     labels = ["Gallons Per Hour", "Runtime on Single Tank of Gas"]
-    ax1.legend(handles=legend_handles, loc="lower left", bbox_to_anchor=(1.03,0.0), ncol=1)
+    ax1.legend(handles=legend_handles, 
+               loc="lower left", 
+               bbox_to_anchor=(1.03,0.0), 
+               ncol=1)
     
     ax1.set_title(f"Fuel and Runtime per Shelter for {generator_name}")
     fig.tight_layout()
     return fig
 
+
+# ---------------------
+# Other UI Helper Functions
+# ---------------------
+def reset_results():
+    st.session_state.optimized = False
+    st.session_state.example_scenario = False
+
+def load_random_weights():
+    st.session_state["user_weights"] = [random.randint(0, 5) for _ in range(5)]
 
 # ---------------------
 # Streamlit UI
@@ -654,12 +718,32 @@ st.set_page_config(layout="wide", page_title="ECU Selection Optimizer")
 
 st.title("ECU Selection Optimizer")
 
+# Initialize files and vars in session_state
+if "hvac_file" not in st.session_state:
+    st.session_state["hvac_file"] = None
+if "catalog_file" not in st.session_state:
+    st.session_state["catalog_file"] = None
+if "example_scenario" not in st.session_state:
+    st.session_state.example_scenario = False
+if "optimized" not in st.session_state:
+    st.session_state.optimized = False
+if "files_uploaded" not in st.session_state:
+    st.session_state.files_uploaded = False
+if "user_weights" not in st.session_state:
+    st.session_state["user_weights"] = [1] * 5
+
 st.markdown("""
 Upload your HVAC CSV (output from AutoDISE) and your ECU catalog (spreadsheet with all the available ECUs).
 Then choose weights and press **Optimize**.
 """)
-hvac_file = st.file_uploader("**Upload :green[AutoDISE Output] (HVAC24Profile...csv):**", type=["csv"], key="hvac")
-catalog_file = st.file_uploader("**Upload :blue[ECU Specifications File]:**", type=["csv"], key="catalog")
+hvac_file = st.file_uploader("**Upload :green[AutoDISE Output] (HVAC24Profile...csv):**", 
+                             type=["csv"], 
+                             key="hvac",
+                             on_change=reset_results)
+catalog_file = st.file_uploader("**Upload :blue[ECU Specifications File]:**", 
+                                type=["csv"], 
+                                key="catalog",
+                                on_change=reset_results)
 
 # Download example buttons
 # Example CSV file paths (relative to your app)
@@ -675,33 +759,59 @@ with open(hvac_example_file, "rb") as f:
 
 
 if hvac_file is None or catalog_file is None:
-    col3, col4 = st.columns([1, 2])
-    with col3:
+    col3, col4, col7 = st.columns(3)
+    with col4:
         st.download_button(
             label="Download Example ECU Specifications",
             data=ecu_bytes,
             file_name="ECU_Specs_Example.csv",
-            mime="text/csv"
+            mime="text/csv",
+            use_container_width=True
         )
-    with col4:
+    with col3:
         st.download_button(
             label="Download Example AutoDISE Output",
             data=hvac_bytes,
             file_name="HVAC_Profile_Example.csv",
-            mime="text/csv"
+            mime="text/csv",
+            use_container_width=True
         )
+    with col7:
+        if st.button(
+                     "Run Example Scenario",
+                     type="primary",
+                     help="This will automatically load the example \
+                        files found on the left into the tool.",
+                     use_container_width=True):
+            load_random_weights()
+            st.session_state.example_scenario = True
+            st.session_state.optimized = False
+else:
+    st.session_state.example_scenario = False
+
+# Put files in session state
+if st.session_state.example_scenario:
+    st.session_state["hvac_file"] = hvac_bytes
+    st.session_state["catalog_file"] = ecu_bytes
+    st.session_state.files_uploaded = True
+elif hvac_file is not None and catalog_file is not None:
+    st.session_state["hvac_file"] = hvac_file.getvalue()
+    st.session_state["catalog_file"] = catalog_file.getvalue()
+    st.session_state.files_uploaded = True
+else:
+    st.session_state.files_uploaded = False
 
 # Sliders
 st.sidebar.header("Set Weights")
 st.sidebar.markdown("Click Optimize after changing weights.")
-w_cost = st.sidebar.slider("Cost", 0, 5, 1, step=1)
-w_power = st.sidebar.slider("Power", 0, 5, 1, step=1)
-w_weight = st.sidebar.slider("Weight", 0, 5, 1, step=1)
-w_size = st.sidebar.slider("Size", 0, 5, 1, step=1)
-btu_penalty = st.sidebar.slider("BTU Penalty", 0, 5, 1, step=1)
+w_cost      = st.sidebar.slider("Cost", 0, 5, st.session_state["user_weights"][0], step=1)
+w_power     = st.sidebar.slider("Power", 0, 5, st.session_state["user_weights"][1], step=1)
+w_weight    = st.sidebar.slider("Weight", 0, 5, st.session_state["user_weights"][2], step=1)
+w_size      = st.sidebar.slider("Size", 0, 5, st.session_state["user_weights"][3], step=1)
+btu_penalty = st.sidebar.slider("BTU Penalty", 0, 5, st.session_state["user_weights"][4], step=1)
 
 # ---------------------
-# Help Page
+# Help Sidebar
 # ---------------------
 # Getting started drop down
 with st.sidebar.expander("Getting Started"):
@@ -714,19 +824,25 @@ with st.sidebar.expander("Getting Started"):
     4. View/download results
     """)
 
-if hvac_file and catalog_file:
+# ---------------------
+# Read in files
+# ---------------------
+# Proceed only if both files uploaded
+if (st.session_state["hvac_file"] is not None and 
+    st.session_state["catalog_file"] is not None and
+    st.session_state.files_uploaded):
     
     # Read uploaded csvs
     try:
-        tidy_hvac = read_multiple_tables(hvac_file)
+        hvac_buf = io.BytesIO(st.session_state["hvac_file"])
+        tidy_hvac = read_multiple_tables(hvac_buf)
     except Exception as e:
-        st.error(f"Failed to parse HVAC CSV: {e}")
+        st.error(f"Failed to parse AutoDISE File: {e}")
         st.stop()
 
     # ensure numeric hour columns present: coerce any hour-like columns to numeric
     # read the original file again in normal mode to capture numeric values
-    hvac_file.seek(0)
-    hvac_df_numeric = pd.read_csv(hvac_file)
+    hvac_df_numeric = pd.read_csv(io.BytesIO(st.session_state["hvac_file"]))
     # but prefer tidy_hvac which may have been created from hvac_df_numeric structure
     # try to coerce hour columns in tidy_hvac
     for c in tidy_hvac.columns:
@@ -743,22 +859,10 @@ if hvac_file and catalog_file:
     # Add true/false column for window unit compatibility
     targets["Window Unit Compatibility"] = True
 
-    st.success("File upload success.")
-    st.markdown("---")  # horizontal rule
-
-    # Make columns in app
-    col1, col2 = st.columns(2)
-
-    # display targets
-    with col1:
-        st.markdown("### Target BTU and Window Compatibility "
-                    '<span style="color:gray;" title="These are the maximum BTU loads for each shelter. These values are extracted from the file you uploaded from AutoDISE.">ⓘ</span>',
-                    unsafe_allow_html=True)
-        st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
-        targets = st.data_editor(targets, hide_index=True, disabled=["ShelterName", "TargetBTU"])
-
     # read catalog
-    catalog = pd.read_csv(catalog_file)
+    catalog_buf = io.BytesIO(st.session_state["catalog_file"])
+    catalog = pd.read_csv(catalog_buf)
+
     # normalize catalog column names (best-effort)
     # ensure required columns exist
     expected_cols = ["Model", "CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size"]
@@ -785,6 +889,26 @@ if hvac_file and catalog_file:
     # coerce numeric
     for c in ["CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size"]:
         catalog[c] = pd.to_numeric(catalog[c], errors="coerce")
+
+    # Display success or not
+    if st.session_state.example_scenario:
+        st.success("Example scenario loaded.")
+    else:
+        st.success("Files uploaded.")
+    st.markdown("---")  # horizontal rule
+
+    # Make columns for display
+    col1, col2 = st.columns(2)
+
+    # display targets
+    with col1:
+        st.markdown("### Target BTU and Window Compatibility "
+                    '<span style="color:gray;" title="These are the maximum BTU loads for each shelter. These values are extracted from the file you uploaded from AutoDISE.">ⓘ</span>',
+                    unsafe_allow_html=True)
+        st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
+        targets = st.data_editor(targets, hide_index=True, disabled=["ShelterName", "TargetBTU"])
+
+    # Display ecu catalog
     with col2:
         st.subheader("ECU Catalog")
         st.markdown("All ECUs loaded from ECU Specifications file uploaded above.")
@@ -805,12 +929,13 @@ if hvac_file and catalog_file:
     # Init solve button
     solve_button = st.button("Optimize", type="primary")
 
-    # solve
+    # When solve button pressed
     if solve_button:
         with st.spinner("Solving MILP..."):
             weights = {"cost": w_cost, "power": w_power, "weight": w_weight, "size": w_size}
             try:
-                sol_df = optimize_ecu_mix_normalized(targets, catalog, weights=weights, btu_penalty=btu_penalty)
+                sol_df = optimize_ecu_mix_normalized(targets, catalog, weights=weights, 
+                                                     btu_penalty=btu_penalty)
             except Exception as e:
                 st.error(f"Optimization failed: {e}")
                 st.stop()
@@ -819,7 +944,10 @@ if hvac_file and catalog_file:
         st.session_state["sol_df"] = sol_df
         st.session_state["fuel_result_df"] = calc_fuel(sol_df, gen_spec_df)
 
-    if "sol_df" in st.session_state and "fuel_result_df" in st.session_state:
+        # Set optimized bool
+        st.session_state.optimized = True
+
+    if st.session_state.optimized:
         sol_df = st.session_state["sol_df"]
         fuel_result_df = st.session_state["fuel_result_df"]
 
@@ -980,6 +1108,7 @@ with st.expander(":question: Help"):
                     - Upload and open the .xls file you just downloaded on the web app.
                     - Go to "File" :arrow_right: "Export" :arrow_right: "Export as CSV UTF-8" and download the file.
            - :green[Both files should be .csv files before uploading.]
+           - :red[If you are new to the tool, you can always click the "Run Example Scenario" button to automatically run the analysis with the example files.]
 
            
         2. :blue[**Set Optimization Weights**]
@@ -1073,15 +1202,3 @@ with st.expander("🪖 About The Developer"):
         📧 Contact: *deryk.l.clary.mil(at)usmc.mil*  
         """
     )
-
-# # Final graph (can't figure out how to debug, so took it out)
-# shelter_container = st.empty()
-# shelter_sel = None
-# if sol_df is not None:
-#     shelter_sel = st.selectbox("Select Shelter to view details", options=sol_df["Shelter"].tolist())
-
-# if shelter_sel is not None:
-#     with shelter_container.container():
-#         # Temperature + HVAC plot
-#         fig_temp = plot_temperature_with_hvac(melted, shelter_sel)
-#         st.pyplot(fig_temp)
