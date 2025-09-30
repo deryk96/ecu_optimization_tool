@@ -755,7 +755,7 @@ if hvac_file and catalog_file:
                     '<span style="color:gray;" title="These are the maximum BTU loads for each shelter. These values are extracted from the file you uploaded from AutoDISE.">ⓘ</span>',
                     unsafe_allow_html=True)
         st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
-        targets = st.data_editor(targets.reset_index('ShelterName'), disabled=["TargetBTU"])
+        targets = st.data_editor(targets, hide_index=True, disabled=["ShelterName", "TargetBTU"])
 
     # read catalog
     catalog = pd.read_csv(catalog_file)
