@@ -733,10 +733,9 @@ if "user_weights" not in st.session_state:
     st.session_state["user_weights"] = [1] * 5
 
 st.markdown("""
-Upload your HVAC CSV (output from AutoDISE) and your ECU catalog (spreadsheet with all the available ECUs).
-Then choose weights and press **Optimize**.
+Upload your AutoDISE output file and ECU catalog. Then set your weights to the left and press **Optimize**. 
 """)
-hvac_file = st.file_uploader("**Upload :green[AutoDISE Output] (HVAC24Profile...csv):**", 
+hvac_file = st.file_uploader("**Upload :green[AutoDISE Output]:**", 
                              type=["csv"], 
                              key="hvac",
                              on_change=reset_results)
@@ -795,6 +794,7 @@ if st.session_state.example_scenario:
     st.session_state["catalog_file"] = ecu_bytes
     st.session_state.files_uploaded = True
 elif hvac_file is not None and catalog_file is not None:
+    # if hvac_file.name.lower().endswith(".csv"): # TODO: Fix this functionality
     st.session_state["hvac_file"] = hvac_file.getvalue()
     st.session_state["catalog_file"] = catalog_file.getvalue()
     st.session_state.files_uploaded = True
@@ -816,7 +816,7 @@ btu_penalty = st.sidebar.slider("BTU Penalty", 0, 5, st.session_state["user_weig
 # Getting started drop down
 with st.sidebar.expander("Getting Started"):
     st.markdown("""
-    1. Upload HVAC & ECU files  
+    1. Upload AutoDISE & ECU files  
     2. Adjust weights to your preference
         - Higher number = more important to minimize
     3. Select which shelters can accept window-mounted ECUs
@@ -906,7 +906,7 @@ if (st.session_state["hvac_file"] is not None and
                     '<span style="color:gray;" title="These are the maximum BTU loads for each shelter. These values are extracted from the file you uploaded from AutoDISE.">ⓘ</span>',
                     unsafe_allow_html=True)
         st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
-        targets = st.data_editor(targets, hide_index=True, disabled=["ShelterName", "TargetBTU"])
+        targets = st.data_editor(targets, hide_index=True, disabled=["TargetBTU"])
 
     # Display ecu catalog
     with col2:
@@ -1078,35 +1078,34 @@ if (st.session_state["hvac_file"] is not None and
         )
 
 else:
-    st.info("Upload both an HVAC file from AutoDISE and ECU Specifications file to continue.")
+    st.info("Upload your AutoDISE file and ECU catalog to continue.")
+
+st.markdown("---")  # horizontal rule
+
+# User guide download
+_, col8, _ = st.columns(3)
+guide_path = Path("Documentation/ECU_Tool_Guide.pdf")
+with open(guide_path, "rb") as f:
+    guide_bytes = f.read()
+with col8:
+    st.download_button(
+        label="Click here to download the user guide (PDF)",
+        icon="📘",
+        data=guide_bytes,
+        file_name="ECU_App_User_Guide.pdf",
+        mime="application/octet-stream",
+        use_container_width=True
+    )
 
 # Help section
-st.markdown("---")  # horizontal rule
 with st.expander(":question: Help"):
     st.markdown(
         '''
         ### How To Use This Tool
+        See the user guide available for download above for detailed instructions with pictures.
         1. :blue[**Upload Your Data**]
            - Upload the *ECU Specifications file*.
-                - It **must** include the following six columns: 
-                    - `Unit (ECU)`: The ECU's name
-                    - `Cooling Capacity (BTU/hr)`
-                    - `Cooling Load (kVA)`
-                    - `Cost`
-                    - `Weight (lbs)`
-                    - `Size (ft3)`
-                    - `Window Mount`: Whether the ECU is window-mounted (True/False)
-                - You should input all the information for each ECU you want to include in the calculation into this file.
-           - Upload the *HVAC Analysis file* (must be exported from AutoDISE). To export the correct data:
-                - Build out your shelter(s) and environment in AutoDISE.
-                - Go to the "HVAC Analysis" Tab.
-                - Go to the "24 Hour Profiles" Tab.
-                - In the left sidebar, select the box next to each of your shelters (only select your shelters, **not ECUs**).
-                - Click "Export Checked Items" and download the file.
-                - *If the downloaded file is a .xls file*, you will not be able to use it on a MCEN computer. Go to the Excel web app at https://excel.cloud.microsoft/.
-                    - Sign in to your Microsoft account.
-                    - Upload and open the .xls file you just downloaded on the web app.
-                    - Go to "File" :arrow_right: "Export" :arrow_right: "Export as CSV UTF-8" and download the file.
+           - Upload the *HVAC Analysis file* (must be exported from AutoDISE).
            - :green[Both files should be .csv files before uploading.]
            - :red[If you are new to the tool, you can always click the "Run Example Scenario" button to automatically run the analysis with the example files.]
 
@@ -1145,13 +1144,13 @@ with st.expander(":question: Help"):
            - All the generated tables will be in separate tabs within a single Excel file.
 
         ---
-        💡 **Tip:** If you don’t have your own data, you can use the example files available for download above.
+        💡 **Tip:** If you don’t have your own data, you can use the example files available for download above or run the example scenario.
         '''
     )
 
 
 # Open formulation file
-formulation_file = Path("MILP Formulation.pdf")
+formulation_file = Path("Documentation/MILP Formulation.pdf")
 with open(formulation_file, "rb") as f:
     formulation_bytes = f.read()
 
@@ -1169,7 +1168,15 @@ with st.expander(":information_source: Information"):
     st.download_button("Click here to download the problem formulation sheet",
                        data=formulation_bytes,
                        file_name="ECU_Optimization_Formulation.pdf",
-                       mime="text/pdf")
+                       mime="text/pdf",
+                       type="primary",
+                       help="PDF file"
+    )
+    st.link_button(
+        label="Click here to learn more about Mixed Integer Programming",
+        url="https://www.nvidia.com/en-us/glossary/mixed-integer-programming/",
+        help="https://www.nvidia.com/en-us/glossary/mixed-integer-programming/"
+    )
     st.markdown(
         """
         3. :blue[**Assumptions**]  
@@ -1184,7 +1191,7 @@ with st.expander(":information_source: Information"):
           
         4. :blue[**Limitations**]
             - AutoDISE doesn't account for setting up your shelters in the shade.
-                - There is an option in AutoDISE that allows you to put cammie netting over your shelter. That could be an interim solution to mimic shady environments.
+                - There is an option in AutoDISE that allows you to put cammie netting over your shelter. That could be an interim solution to mimic shaded environments.
             - Information on actual gear used by different COC echelons varies based on SOP.
             - Acquisition, maintenance, and lifecycle costs of ECUs are not currently accounted for in the cost function due to data availability.
                 - You may add add any associated costs into the total in the "cost" column of the uploaded ECU specifications file and it will then be accounted for.
@@ -1201,4 +1208,4 @@ with st.expander("🪖 About The Developer"):
         🌐 Website: https://www.cdi.marines.mil/Units/CDD/Marine-Corps-Expeditionary-Energy-Office/  
         📧 Contact: *deryk.l.clary.mil(at)usmc.mil*  
         """
-    )
+)
