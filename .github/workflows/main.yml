@@ -14,23 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.13.7'
-      - name: Run tests
+          python-version: '3.13'
+      - name: Run Streamlit tests
         uses: streamlit/streamlit-app-action@v0.0.3
         with:
           app-path: ecu_app.py
-          ruff: true
-          # Add pytest-args to output junit xml
-          pytest-args: -v --junit-xml=test-results.xml
-      - if: always()
-        name: Run tests
-        uses: pmeier/pytest-results-action@v0.6.0
+          ruff: false
+      - name: Run Ruff
+        uses: astral-sh/ruff-action@v3.5.1
         with:
-          path: '**/.github/workflows/test-results.xml'
-          summary: true
-          display-options: fEX
-          fail-on-empty: false
+          args: "check --fix"
