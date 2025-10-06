@@ -23,8 +23,4 @@ jobs:
         uses: streamlit/streamlit-app-action@v0.0.3
         with:
           app-path: ecu_app.py
-          ruff: false
-      - name: Run Ruff
-        uses: astral-sh/ruff-action@v3.5.1
-        with:
-          args: "-v check --fix"
+          ruff: true
