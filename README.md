@@ -105,19 +105,12 @@ Catalog of available ECU models and their characteristics. Example available for
 
 The MILP problem is formulated as:
 
-\[
-\min_x \; w_c C(x) + w_p P(x) + w_w W(x) + w_s S(x) + w_e E(x)
-\]
+<p align="center"> <img src="https://latex.codecogs.com/svg.image?\min_x\;w_cC(x)&plus;w_pP(x)&plus;w_wW(x)&plus;w_sS(x)&plus;w_eE(x)" alt="objective function"/> </p>
 
 Subject to:
-\[
-\sum_m \text{Capacity}_{m} \cdot x_{s,m} \geq \text{TargetBTU}_s \quad \forall s
-\]
-\[
-x_{s,m} \in \mathbb{Z}_{\ge 0}
-\]
+<p align="center"> <img src="https://latex.codecogs.com/svg.image?\sum_m\text{Capacity}_m\cdot{x_{s,m}}\geq\text{TargetBTU}_s,\;\forall\;s" alt="capacity constraint"/> </p> <p align="center"> <img src="https://latex.codecogs.com/svg.image?x_{s,m}\in\mathbb{Z}_{\ge0}" alt="integer constraint"/> </p>
 
-Where each \( w_i \) is a user-specified weight.
+Where each <img src="https://latex.codecogs.com/svg.image?w_i" alt="w_i" style="height:16px; vertical-align:middle;"> is a user-specified weight.
 
 Full formulation available [here](https://github.com/deryk96/ecu_optimization_tool/blob/main/Documentation/MILP%20Formulation.pdf).
 
