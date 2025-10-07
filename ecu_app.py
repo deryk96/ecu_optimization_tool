@@ -100,7 +100,7 @@ def read_multiple_tables(f):
             continue 
 
         # Detect subtable title (row without commas or with commas only at end) 
-        if not "," in stripped: 
+        if "," not in stripped: 
             current_subtable = stripped 
             current_header = None 
             continue 
@@ -363,7 +363,7 @@ def fuel_at_load(gen_row, load_kw, data_complete=True):
     if data_complete: 
         fuels = [gen_row[f"{lvl}% Load"] for lvl in levels] 
     else: 
-        fuels = [gen_row[f"100% Load"] for lvl in levels] 
+        fuels = [gen_row["100% Load"] for lvl in levels] 
 
     # Linear interpolation 
     return np.interp(load_pct, levels, fuels) 
@@ -423,7 +423,6 @@ def plot_temperature_with_hvac(melted, shelter_name, title_suffix=None):
     sns.set_theme(style="whitegrid", palette="muted") 
 
     # Multiple bar plot 
-    bottoms = pd.Series([0] * 24) 
     ax = sns.barplot( 
         data=source_df, 
         x="Hour", 
@@ -494,7 +493,7 @@ def plot_target_vs_achieved(solution_df, melted):
     # Plot labeling/settings 
     plt.ylabel("Heat Load (BTU/hr)") 
     plt.xlabel("Shelter Name") 
-    plt.title(f"Observed vs. Achieved Heat Load per Shelter") 
+    plt.title("Observed vs. Achieved Heat Load per Shelter") 
     plt.xticks(rotation=45, ha="right") 
     ax.legend(loc="lower left", title_fontsize=9, bbox_to_anchor=(1.01,0.0)) 
     ax.set_ylim(0, (comparison_melted["Max_Load"].max() + 5000)) 
@@ -521,7 +520,7 @@ def plot_solution_metrics(solution_df):
                 ax=ax, 
                 palette="muted") 
     ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right") 
-    plt.title(f"Value of Normalized Parameters in Objective Function Per Shelter") 
+    plt.title("Value of Normalized Parameters in Objective Function Per Shelter") 
 
     handles, _ = ax.get_legend_handles_labels() 
     custom_labels = ["Cost", "Power", "Weight", "Size", "BTU Penalty"] 
@@ -571,7 +570,7 @@ def plot_ecu_mix(solution_df):
                 ax=ax, 
                 palette="muted") 
 
-    plt.title(f"Number of ECUs by Type Per Shelter") 
+    plt.title("Number of ECUs by Type Per Shelter") 
     plt.ylabel("Quantity") 
     ax.legend(title="ECU Name", 
               loc="lower left", 
@@ -900,7 +899,7 @@ if (st.session_state["hvac_file"] is not None and
                                          max_chars=50,
                                          required=True,
                                          #  pinned=True,  # TODO: uncomment
-                                         validate="^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
+                                         validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
                                      ),
                                      "TargetBTU": st.column_config.NumberColumn(
                                          "Target BTU",
@@ -951,17 +950,17 @@ if (st.session_state["hvac_file"] is not None and
                                          max_chars=50,
                                          required=True,
                                          #  pinned=True,  # TODO: uncomment
-                                         validate="^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
+                                         validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
                                      ),
                                      "Model": st.column_config.TextColumn(
                                          help="Model number",
                                          max_chars=50,
-                                         validate="^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
+                                         validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
                                      ),
                                      "TAMCN": st.column_config.TextColumn(
                                          help="TAMCN",
                                          max_chars=50,
-                                         validate="^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
+                                         validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
                                      ),
                                      "Max Power (kW)": st.column_config.NumberColumn(
                                          help="Maximum power the generator can output in kilowatts.",
