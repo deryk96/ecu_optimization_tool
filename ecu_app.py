@@ -46,8 +46,6 @@ Email: deryk.l.clary.mil@usmc.mil
 Date: 2025-09-16 
 """ 
 
-# TODO: Implement window unit constraints 
-
 # Import statements 
 import io 
 import numpy as np 
@@ -68,7 +66,7 @@ from scipy.optimize import milp, LinearConstraint, Bounds
 sns.set_theme(style="whitegrid", palette="colorblind") 
 
 # HVAC data to Pandas 
-# @st.cache_data  # Holds the result in the cache for recall  # TODO: Uncomment
+@st.cache_data  # Holds the result in the cache for recall  # TODO: Uncomment
 def read_multiple_tables(f): 
     """ 
     Reads a CSV string with multiple tables separated by blank lines 
@@ -129,45 +127,9 @@ def read_multiple_tables(f):
 
 
 # --------------------- 
-# Helper: parse multi-table HVAC CSVs into tidy long DF 
-# TODO: Delete 
-# --------------------- 
-def parse_multi_table_csv_like(df_raw: pd.DataFrame) -> pd.DataFrame: 
-    """ 
-    Convert a DataFrame that was produced by reading a multi-table CSV (with shelter/subtable rows) 
-    into a tidy long structure with columns: 
-    ShelterName, SubTableName, RowName, <hour columns...> 
-    The uploaded CSV might already be in tidy form; function tries to be robust. 
-    """ 
-    # If the dataframe already contains a RowName and ShelterName columns and numeric hour columns -> assume tidy wide 
-    cols = list(df_raw.columns) 
-    # find hour-like columns (0..23 or '0000 - 0100' style) 
-    hour_cols = [c for c in cols if str(c).strip().isdigit() or (isinstance(c, str) and c.strip().split()[0].isdigit())] 
-    # Try common column names 
-    if set(["ShelterName", "SubTableName", "RowName"]).issubset(set(cols)) and hour_cols: 
-        tidy = df_raw.copy() 
-        return tidy 
-    # Otherwise attempt to detect header rows: look for "ShelterName" like rows. 
-    # We'll try the simple fallback: assume first 4 columns are meta (ShelterName, ECUConfig, SubTableName, RowName) 
-    meta = [] 
-    possible_meta = ["ShelterName", "ECUConfig", "SubTableName", "RowName"] 
-    # If these names aren't present, try to map. 
-    # We'll create them by taking first 4 columns as these meta labels 
-    if len(cols) >= 4: 
-        tidy = df_raw.copy() 
-        tidy = tidy.rename(columns={cols[0]: "ShelterName", 
-                                    cols[1]: "ECUConfig", 
-                                    cols[2]: "SubTableName", 
-                                    cols[3]: "RowName"}) 
-        return tidy 
-    else: 
-        raise ValueError("Uploaded HVAC CSV does not have expected structure; need at least 4 columns of metadata.") 
-
-
-# --------------------- 
 # Extract target BTU per shelter (peak of 'Shelter HVAC Heat Load' rows) 
 # --------------------- 
-# @st.cache_data  # Holds result in cache  # TODO: Uncomment
+@st.cache_data  # Holds result in cache  # TODO: Uncomment
 def extract_targets_from_hvac_df(tidy_wide: pd.DataFrame, shelter_col="ShelterName", rowname="Shelter HVAC Heat Load"): 
     """ 
     Input: tidy_wide with Hour columns in wide format (string hour names or ints). 
@@ -214,7 +176,7 @@ def extract_targets_from_hvac_df(tidy_wide: pd.DataFrame, shelter_col="ShelterNa
 # MILP solver (normalized objective, normalized excess in objective) 
 # Assumes scipy.optimize.milp is available 
 # --------------------- 
-# @st.cache_data  # Holds result in cache for recall  # TODO: Uncomment
+@st.cache_data  # Holds result in cache for recall  # TODO: Uncomment
 def optimize_ecu_mix_normalized( 
     targets_df: pd.DataFrame, 
     catalog_df: pd.DataFrame, 
@@ -625,7 +587,7 @@ def plot_ecu_mix(solution_df):
     fig.tight_layout() 
     return fig 
 
-# @st.fragment  # Allows function to run without rerunning entire script  # TODO: Uncomment
+@st.fragment  # Allows function to run without rerunning entire script  # TODO: Uncomment
 def plot_fuel(result_df, generator_name): 
     # --- Select generator row --- 
     gen_row = result_df.loc[[generator_name]] 
@@ -782,7 +744,8 @@ if hvac_file is None or catalog_file is None:
             data=ecu_bytes,
             file_name="ECU_Specs_Example.csv",
             mime="text/csv",
-            use_container_width=True
+            # use_container_width=True,
+            width="stretch"
         )
     with col3:
         st.download_button(
@@ -790,14 +753,16 @@ if hvac_file is None or catalog_file is None:
             data=hvac_bytes,
             file_name="HVAC_Profile_Example.csv",
             mime="text/csv",
-            use_container_width=True
+            # use_container_width=True,
+            width="stretch"
         )
     with col7:
         if st.button(
             "Run Example Scenario",
             type="primary",
             help="This will automatically load the example files found on the left into the tool.",
-            use_container_width=True
+            # use_container_width=True,
+            width="stretch"
         ):
             load_random_weights()
             st.session_state.example_scenario = True
@@ -835,7 +800,8 @@ btu_penalty = st.sidebar.slider("BTU Penalty", 0, 5, st.session_state["user_weig
 st.sidebar.button("Randomize Weights", 
                   help="Randomizes all the weights above.", 
                   on_click=load_random_weights,
-                  use_container_width=True)
+                #   use_container_width=True,
+                  width="stretch")
 
 
 # ---------------------
@@ -1088,7 +1054,9 @@ if (st.session_state["hvac_file"] is not None and
         # Show result, drop generators with all na
         display_df = fuel_result_df.dropna(how='all').copy()
         display_df.columns = [f"{shelter} - {metric}" for shelter, metric in display_df.columns]
-        st.dataframe(display_df.round(2), use_container_width=True)
+        st.dataframe(display_df.round(2), 
+                    #  use_container_width=True,
+                     width="stretch")
 
         # ---------------------
         # Plotting area
@@ -1214,11 +1182,12 @@ with open(guide_path, "rb") as f:
 with col8:
     st.download_button(
         label="Click here to download the user guide (PDF)",
-        # icon="📘",  # TODO: Uncomment
+        icon="📘",  # TODO: Uncomment
         data=guide_bytes,
         file_name="ECU_App_User_Guide.pdf",
         mime="application/octet-stream",
-        use_container_width=True
+        # use_container_width=True,
+        width="stretch"
     )
 
 # ---------------------
