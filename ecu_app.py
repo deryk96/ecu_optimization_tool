@@ -56,12 +56,12 @@ import streamlit as st
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
-import io
 import zipfile
 from datetime import datetime
 from pathlib import Path
 import matplotlib.patches as mpatches
 import random
+import re
 
 # MILP tools
 from scipy.optimize import milp, LinearConstraint, Bounds
@@ -82,27 +82,29 @@ def read_multiple_tables(f):
               Returns an empty list if no tables are found or if an error occurs.
     """
     rows = []
-    current_ecu_config = None
+    # current_ecu_config = None
     current_shelter = None
     current_header = None
     current_subtable = None
 
     for line in f:
-        stripped = line.decode("utf-8").strip().strip(",")\
-        
+        stripped = line.decode("utf-8").strip().strip(",")
+        st.write(stripped)
         if not stripped:  # blank line → table break
             continue
 
         # If this is a shelter name row
         if stripped.startswith("24 Profile for Shelter") or stripped.startswith("\ufeff24 Profile for Shelter"):
-            split_str = stripped.split(" ")
-            current_ecu_config = split_str[-1]
-            current_shelter = ' '.join(split_str[-3:-1])
+            split_str = stripped.split(":")
+            # current_ecu_config = split_str[-1]
+            # current_shelter = ' '.join(split_str[-3:-1])
+            current_shelter = split_str[1].strip().split(",")[0].strip()
+            st.write(f"Detected shelter: {current_shelter}")
             current_header = None
             continue
 
         # Detect subtable title (row without commas or with commas only at end)
-        if not "," in stripped:
+        if "," not in stripped:
             current_subtable = stripped
             current_header = None
             continue
@@ -117,47 +119,16 @@ def read_multiple_tables(f):
         row_data = stripped.split(",")
         row_dict = {
             "ShelterName": current_shelter,
-            "ECUConfig": current_ecu_config,
+            # "ECUConfig": current_ecu_config,
             "SubTableName": current_subtable,
             "RowName": row_data[0]
         }
         row_dict.update(dict(zip(current_header, row_data)))
         rows.append(row_dict)
 
+    st.dataframe(pd.DataFrame(rows))
     # Combine into DataFrame and Return
     return pd.DataFrame(rows)
-
-# ---------------------
-# Helper: parse multi-table HVAC CSVs into tidy long DF
-# TODO: Delete
-# ---------------------
-def parse_multi_table_csv_like(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert a DataFrame that was produced by reading a multi-table CSV (with shelter/subtable rows)
-    into a tidy long structure with columns:
-      ShelterName, SubTableName, RowName, <hour columns...>
-    The uploaded CSV might already be in tidy form; function tries to be robust.
-    """
-    # If the dataframe already contains a RowName and ShelterName columns and numeric hour columns -> assume tidy wide
-    cols = list(df_raw.columns)
-    # find hour-like columns (0..23 or '0000 - 0100' style)
-    hour_cols = [c for c in cols if str(c).strip().isdigit() or (isinstance(c, str) and c.strip().split()[0].isdigit())]
-    # Try common column names
-    if set(["ShelterName", "SubTableName", "RowName"]).issubset(set(cols)) and hour_cols:
-        tidy = df_raw.copy()
-        return tidy
-    # Otherwise attempt to detect header rows: look for "ShelterName" like rows.
-    # We'll try the simple fallback: assume first 4 columns are meta (ShelterName, ECUConfig, SubTableName, RowName)
-    meta = []
-    possible_meta = ["ShelterName", "ECUConfig", "SubTableName", "RowName"]
-    # If these names aren't present, try to map.
-    # We'll create them by taking first 4 columns as these meta labels
-    if len(cols) >= 4:
-        tidy = df_raw.copy()
-        tidy = tidy.rename(columns={cols[0]: "ShelterName", cols[1]: "ECUConfig", cols[2]: "SubTableName", cols[3]: "RowName"})
-        return tidy
-    else:
-        raise ValueError("Uploaded HVAC CSV does not have expected structure; need at least 4 columns of metadata.")
 
 
 # ---------------------
@@ -169,6 +140,7 @@ def extract_targets_from_hvac_df(tidy_wide: pd.DataFrame, shelter_col="ShelterNa
     Returns DataFrame with columns [ShelterName, TargetBTU]
     """
     # find hour columns
+    # st.dataframe(tidy_wide)
     hour_cols = [c for c in tidy_wide.columns if str(c).strip().isdigit()]
     if not hour_cols:
         # also accept columns like '2400 - 0100' or '0000 - 0100' -> extract leftmost hour
@@ -395,7 +367,7 @@ def fuel_at_load(gen_row, load_kw, data_complete=True):
     if data_complete:
         fuels = [gen_row[f"{lvl}% Load"] for lvl in levels]
     else:
-        fuels = [gen_row[f"100% Load"] for lvl in levels]
+        fuels = [gen_row["100\% Load"] for lvl in levels]
     
     # Linear interpolation
     return np.interp(load_pct, levels, fuels)
@@ -456,7 +428,7 @@ def plot_temperature_with_hvac(melted, shelter_name, title_suffix=None):
     sns.set_theme(style="whitegrid", palette="muted")
 
     # Multiple bar plot
-    bottoms = pd.Series([0] * 24)
+    # bottoms = pd.Series([0] * 24)
     ax = sns.barplot(
         data=source_df,
         x="Hour",
@@ -526,7 +498,7 @@ def plot_target_vs_achieved(solution_df, melted):
     # Plot labeling/settings
     plt.ylabel("Heat Load (BTU/hr)")
     plt.xlabel("Shelter Name")
-    plt.title(f"Observed vs. Achieved Heat Load per Shelter")
+    plt.title("Observed vs. Achieved Heat Load per Shelter")
     plt.xticks(rotation=45, ha="right")
     ax.legend(loc="lower left", title_fontsize=9, bbox_to_anchor=(1.01,0.0))
     ax.set_ylim(0, (comparison_melted["Max_Load"].max() + 5000))
@@ -553,7 +525,7 @@ def plot_solution_metrics(solution_df):
                 ax=ax, 
                 palette="muted")
     ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
-    plt.title(f"Value of Normalized Parameters in Objective Function Per Shelter")
+    plt.title("Value of Normalized Parameters in Objective Function Per Shelter")
 
     handles, _ = ax.get_legend_handles_labels()
     custom_labels = ["Cost", "Power", "Weight", "Size", "BTU Penalty"]
@@ -601,7 +573,7 @@ def plot_ecu_mix(solution_df):
                 ax=ax, 
                 palette="muted")
 
-    plt.title(f"Number of ECUs by Type Per Shelter")
+    plt.title("Number of ECUs by Type Per Shelter")
     plt.ylabel("Quantity")
     ax.legend(title="ECU Name", 
               loc="lower left", 
@@ -690,7 +662,7 @@ def plot_fuel(result_df, generator_name):
         mpatches.Patch(color=fuel_color, label="Fuel Consumption (gal/hr)"),
         mpatches.Patch(color=runtime_color, label="Runtime on Single Tank of Gas")
     ]
-    labels = ["Gallons Per Hour", "Runtime on Single Tank of Gas"]
+    # labels = ["Gallons Per Hour", "Runtime on Single Tank of Gas"]
     ax1.legend(handles=legend_handles, 
                loc="lower left", 
                bbox_to_anchor=(1.03,0.0), 
@@ -710,6 +682,60 @@ def reset_results():
 
 def load_random_weights():
     st.session_state["user_weights"] = [random.randint(0, 5) for _ in range(5)]
+
+def normalize_file(uploaded_file):
+    if uploaded_file is None:
+        return None
+    
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        # return uploaded_file.getvalue()
+        df = pd.read_csv(uploaded_file)
+    elif name.endswith(".xlsx"):
+        df = pd.read_excel(uploaded_file, engine="openpyxl")
+    elif name.endswith(".xls"):
+        try:  # Try normal first
+            df = pd.read_excel(uploaded_file, engine="xlrd")
+        except Exception:
+            # Might be HTML table 
+            uploaded_file.seek(0)
+            df = pd.read_html(uploaded_file.read(), header=0)[0]
+        
+        # Cleanup to make look like CSV
+        df = df.loc[:, ~df.columns.astype(str).str.contains("Unnamed", case=False)]
+        df.columns = [str(c).strip() for c in df.columns]
+    else:
+        return None
+    
+    # Return bytes
+    buffer = io.BytesIO()
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# def normalize_file(uploaded_file):
+#     file_type = uploaded_file.name.lower()
+
+#     if file_type.endswith(".csv"):
+#         df = pd.read_csv(uploaded_file)
+#     elif file_type.endswith((".xls", ".xlsx")):
+#         df = pd.read_excel(uploaded_file, engine="openpyxl")
+#     else:
+#         raise ValueError("Unsupported file type")
+
+#     # Drop unnamed columns safely
+#     df = df.loc[:, ~df.columns.astype(str).str.contains("^Unnamed", case=False)]
+
+#     # Strip whitespace from headers
+#     df.columns = df.columns.astype(str).str.strip()
+
+#     # Return bytes (as you mentioned)
+#     buffer = io.BytesIO()
+#     df.to_csv(buffer, index=False)
+#     buffer.seek(0)
+#     return buffer.getvalue()
+
 
 # ---------------------
 # Streamlit UI
@@ -736,11 +762,11 @@ st.markdown("""
 Upload your AutoDISE output file and ECU catalog. Then set your weights to the left and press **Optimize**. 
 """)
 hvac_file = st.file_uploader("**Upload :green[AutoDISE Output]:**", 
-                             type=["csv"], 
+                             type=["csv", "xls"], 
                              key="hvac",
                              on_change=reset_results)
 catalog_file = st.file_uploader("**Upload :blue[ECU Specifications File]:**", 
-                                type=["csv"], 
+                                type=["csv", "xls", "xlsx"], 
                                 key="catalog",
                                 on_change=reset_results)
 
@@ -756,7 +782,7 @@ with open(ecu_example_file, "rb") as f:
 with open(hvac_example_file, "rb") as f:
     hvac_bytes = f.read()
 
-
+# Example file and scenario buttons
 if hvac_file is None or catalog_file is None:
     col3, col4, col7 = st.columns(3)
     with col4:
@@ -794,9 +820,8 @@ if st.session_state.example_scenario:
     st.session_state["catalog_file"] = ecu_bytes
     st.session_state.files_uploaded = True
 elif hvac_file is not None and catalog_file is not None:
-    # if hvac_file.name.lower().endswith(".csv"): # TODO: Fix this functionality
-    st.session_state["hvac_file"] = hvac_file.getvalue()
-    st.session_state["catalog_file"] = catalog_file.getvalue()
+    st.session_state["hvac_file"] = normalize_file(hvac_file)
+    st.session_state["catalog_file"] = normalize_file(catalog_file)
     st.session_state.files_uploaded = True
 else:
     st.session_state.files_uploaded = False
@@ -848,7 +873,6 @@ if (st.session_state["hvac_file"] is not None and
     for c in tidy_hvac.columns:
         if str(c).strip().isdigit():
             tidy_hvac[c] = pd.to_numeric(tidy_hvac[c], errors="coerce")
-
     # extract targets
     try:
         targets = extract_targets_from_hvac_df(tidy_hvac)
