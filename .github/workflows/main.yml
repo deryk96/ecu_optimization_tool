@@ -1,0 +1,26 @@
+name: ECU Tool App Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  streamlit_test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Run Streamlit tests
+        uses: streamlit/streamlit-app-action@v0.0.3
+        with:
+          app-path: ecu_app.py
+          ruff: true
