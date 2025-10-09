@@ -31,9 +31,9 @@ Constraints are NOT normalized (they use real BTU values).
 - Interactive weight sliders (0-10) for cost, power, weight, size, and BTU penalty. 
 - Displays results table with selected ECU mix per shelter, objective value, and totals. 
 - Visualizations: 
-* Target vs Achieved BTU per shelter 
-* Normalized objective function component breakdown 
-* ECU mix distribution per shelter 
+    * Target vs Achieved BTU per shelter 
+    * Normalized objective function component breakdown 
+    * ECU mix distribution per shelter 
 - Downloadable solution table as CSV or Excel. 
 
 Usage: 
@@ -48,6 +48,7 @@ Date: 2025-09-16
 
 # Import statements 
 import io 
+import os
 import numpy as np 
 import pandas as pd 
 import streamlit as st 
@@ -59,6 +60,7 @@ from datetime import datetime
 from pathlib import Path 
 import matplotlib.patches as mpatches 
 import random 
+from bs4 import BeautifulSoup
 
 # MILP tools 
 from scipy.optimize import milp, LinearConstraint, Bounds 
@@ -66,18 +68,17 @@ from scipy.optimize import milp, LinearConstraint, Bounds
 sns.set_theme(style="whitegrid", palette="colorblind") 
 
 # HVAC data to Pandas 
-@st.cache_data  # Holds the result in the cache for recall  # TODO: Uncomment
+@st.cache_data  # Holds the result in the cache for recall 
 def read_multiple_tables(f): 
     """ 
     Reads a CSV string with multiple tables separated by blank lines 
     into a list of Pandas DataFrames. 
 
     Args: 
-        csv_string (str): The CSV data as a string. 
+        f (file): File object of a CSV file.
 
     Returns: 
-        list: A list of Pandas DataFrames, one for each table. 
-        Returns an empty list if no tables are found or if an error occurs. 
+        Dataframe with parsed AutoDISE data.
     """ 
     rows = [] 
     current_ecu_config = None 
@@ -125,14 +126,103 @@ def read_multiple_tables(f):
     # Combine into DataFrame and Return 
     return pd.DataFrame(rows)
 
+@st.cache_data
+def read_xls_file(f):
+    """ 
+    Reads an XLS file with multiple tables separated by blank lines 
+    into a list of Pandas DataFrames. 
+
+    Args: 
+        file_path (Path): A Path object that points to the XLS file that's in an HTML format
+
+    Returns: 
+        Dataframe with parsed AutoDISE data.
+    """ 
+    # 1. Read the HTML file
+    soup = BeautifulSoup(f, 'html.parser')
+
+    # --- 2. Initialize State and Data Holders ---
+    all_rows_data = []  # This will hold a list of dictionaries, one for each final row
+
+    # State variables to keep track of the current context
+    current_shelter_name = None
+    current_ecu_config = None
+    current_sub_table_name = None
+    current_header = None
+
+    # --- 3. Process Each Row in the Table ---
+    table = soup.find('table')
+    for row in table.find_all('tr'):
+        cols = row.find_all('td')
+
+        # Skip empty rows
+        if not cols:
+            continue
+
+        # A) Check for a Main Title Row (e.g., "24 Profile for Shelter: AirBeam 2032 18K")
+        is_main_title = "24 Profile for Shelter" in cols[0].text
+        if len(cols) == 1 and cols[0].get('colspan') and is_main_title:
+            title_text = cols[0].text.strip().split(':')[-1].strip()
+            
+            # Robustly split shelter name from ECU config (handles spaces in shelter names)
+            parts = title_text.rsplit(' ', 1)
+            if len(parts) == 2:
+                current_shelter_name = parts[0]
+                current_ecu_config = parts[1]
+            else: # Fallback for titles without an ECU config
+                current_shelter_name = parts[0]
+                current_ecu_config = None
+            
+            # Reset sub-context when a new main shelter block starts
+            current_sub_table_name = None
+            continue
+
+        # B) Check for a Sub-Table Title Row (e.g., "Temperatures (°F)")
+        if len(cols) == 1 and cols[0].get('colspan') and not is_main_title:
+            text = cols[0].text.strip()
+            if text and text != '\xa0': # \xa0 is a non-breaking space
+                current_sub_table_name = text
+            continue
+        
+        # C) Check for a Data Header Row (the one with time slots)
+        if len(cols) > 1 and cols[0].text.strip() == '':
+            current_header = [h.text.strip() for h in cols]
+            continue
+
+        # D) Process a Data Row
+        # A data row has multiple columns and has text in the first column
+        if len(cols) > 1 and cols[0].text.strip() != '':
+            row_name = cols[0].text.strip()
+            values = [v.text.strip() for v in cols[1:]]
+
+            # Assemble the dictionary for this row
+            row_dict = {
+                'ShelterName': current_shelter_name,
+                'ECUConfig': current_ecu_config,
+                'SubTableName': current_sub_table_name,
+                'RowName': row_name
+            }
+            
+            # Add the time-based data using the saved header
+            for i, col_name in enumerate(current_header[1:]):
+                if i < len(values):
+                    row_dict[col_name] = values[i]
+                else:
+                    row_dict[col_name] = None # Handle rows with missing values
+
+            all_rows_data.append(row_dict)
+
+    # --- 4. Create the Final DataFrame ---
+    return pd.DataFrame(all_rows_data)
 
 # --------------------- 
 # Extract target BTU per shelter (peak of 'Shelter HVAC Heat Load' rows) 
 # --------------------- 
-@st.cache_data  # Holds result in cache  # TODO: Uncomment
+@st.cache_data  # Holds result in cache 
 def extract_targets_from_hvac_df(tidy_wide: pd.DataFrame, shelter_col="ShelterName", rowname="Shelter HVAC Heat Load"): 
     """ 
     Input: tidy_wide with Hour columns in wide format (string hour names or ints). 
+
     Returns DataFrame with columns [ShelterName, TargetBTU] 
     """ 
     # find hour columns 
@@ -176,7 +266,7 @@ def extract_targets_from_hvac_df(tidy_wide: pd.DataFrame, shelter_col="ShelterNa
 # MILP solver (normalized objective, normalized excess in objective) 
 # Assumes scipy.optimize.milp is available 
 # --------------------- 
-@st.cache_data  # Holds result in cache for recall  # TODO: Uncomment
+@st.cache_data  # Holds result in cache for recall
 def optimize_ecu_mix_normalized( 
     targets_df: pd.DataFrame, 
     catalog_df: pd.DataFrame, 
@@ -586,7 +676,7 @@ def plot_ecu_mix(solution_df):
     fig.tight_layout() 
     return fig 
 
-@st.fragment  # Allows function to run without rerunning entire script  # TODO: Uncomment
+@st.fragment  # Allows function to run without rerunning entire script  
 def plot_fuel(result_df, generator_name): 
     # --- Select generator row --- 
     gen_row = result_df.loc[[generator_name]] 
@@ -685,6 +775,10 @@ if "files_uploaded" not in st.session_state:
     st.session_state.files_uploaded = False
 if "user_weights" not in st.session_state:
     st.session_state["user_weights"] = [1] * 5
+if "hvac_file_type" not in st.session_state:
+    st.session_state.hvac_file_type = None
+if "ecu_file_type" not in st.session_state:
+    st.session_state.ecu_file_type = None
 
 # ---------------------
 # Other UI Helper Functions
@@ -712,55 +806,53 @@ Upload your AutoDISE output file and ECU catalog. Then set your weights to the l
 """)
 
 hvac_file = st.file_uploader(
-    "**Upload :green[AutoDISE Output]:**",
-    type=["csv"],
+    "**Upload :green[AutoDISE Output] (.csv or .xls):**",
+    type=["csv", "xls"],
     key="hvac",
     on_change=reset_results
 )
 catalog_file = st.file_uploader(
-    "**Upload :blue[ECU Specifications File]:**",
-    type=["csv"],
+    "**Upload :blue[ECU Specifications File] (.csv or .xlsx):**",
+    type=["csv", "xlsx"],
     key="catalog",
     on_change=reset_results
 )
 
-# Download example buttons
-ecu_example_file = Path("Inputs/ECUSpecs.csv")
-hvac_example_file = Path("Inputs/HVAC24HourProfile_Palms_Custom.csv")
-
-# Read files into memory
-with open(ecu_example_file, "rb") as f:
-    ecu_bytes = f.read()
-
-with open(hvac_example_file, "rb") as f:
-    hvac_bytes = f.read()
-
+# Download and Example Scenario buttons
 if hvac_file is None or catalog_file is None:
+    # Download example buttons
+    ecu_example_file = Path("Inputs/ECUSpecs.xlsx")
+    hvac_example_file = Path("Inputs/HVAC24HourProfile_Palms_Custom.csv")
+
+    # Read files into memory
+    with open(ecu_example_file, "rb") as f:
+        ecu_bytes = f.read()
+
+    with open(hvac_example_file, "rb") as f:
+        hvac_bytes = f.read()
+
     col3, col4, col7 = st.columns(3)
-    with col4:
-        st.download_button(
-            label="Download Example ECU Specifications",
-            data=ecu_bytes,
-            file_name="ECU_Specs_Example.csv",
-            mime="text/csv",
-            # use_container_width=True,
-            width="stretch"
-        )
     with col3:
         st.download_button(
             label="Download Example AutoDISE Output",
             data=hvac_bytes,
             file_name="HVAC_Profile_Example.csv",
             mime="text/csv",
-            # use_container_width=True,
-            width="stretch"
+            width="stretch" 
+        )
+    with col4:
+        st.download_button(
+            label="Download Example ECU Specifications",
+            data=ecu_bytes,
+            file_name="ECU_Specs_Example.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch"  
         )
     with col7:
         if st.button(
             "Run Example Scenario",
             type="primary",
             help="This will automatically load the example files found on the left into the tool.",
-            # use_container_width=True,
             width="stretch"
         ):
             load_random_weights()
@@ -774,7 +866,11 @@ if st.session_state.example_scenario:
     st.session_state["hvac_file"] = hvac_bytes
     st.session_state["catalog_file"] = ecu_bytes
     st.session_state.files_uploaded = True
+    st.session_state.hvac_file_type = 'csv'
+    st.session_state.ecu_file_type = 'xlsx'
 elif hvac_file is not None and catalog_file is not None:
+    st.session_state.hvac_file_type = hvac_file.name.split('.')[-1]  # Save filetypes for correct reading later
+    st.session_state.ecu_file_type = catalog_file.name.split('.')[-1]
     st.session_state["hvac_file"] = hvac_file.getvalue()
     st.session_state["catalog_file"] = catalog_file.getvalue()
     st.session_state.files_uploaded = True
@@ -799,8 +895,8 @@ btu_penalty = st.sidebar.slider("BTU Penalty", 0, 5, st.session_state["user_weig
 st.sidebar.button("Randomize Weights", 
                   help="Randomizes all the weights above.", 
                   on_click=load_random_weights,
-                #   use_container_width=True,
-                  width="stretch")
+                  width="stretch" 
+)
 
 
 # ---------------------
@@ -811,15 +907,24 @@ if (st.session_state["hvac_file"] is not None and
     st.session_state.files_uploaded):
 
     # Read uploaded csvs
-    try:
-        hvac_buf = io.BytesIO(st.session_state["hvac_file"])
-        tidy_hvac = read_multiple_tables(hvac_buf)
-    except Exception as e:
-        st.error(f"Failed to parse AutoDISE File: {e}")
+    if st.session_state.hvac_file_type == "csv":
+        try:
+            hvac_buf = io.BytesIO(st.session_state["hvac_file"])
+            tidy_hvac = read_multiple_tables(hvac_buf)
+        except Exception as e:
+            st.error(f"Failed to parse AutoDISE File: {e}")
+            st.stop()
+    elif st.session_state.hvac_file_type == "xls":
+        try:
+            tidy_hvac = read_xls_file(st.session_state["hvac_file"])
+        except Exception as e:
+            st.error(f"Failed to parse AutoDISE File: {e}")
+            st.stop()
+    else:
+        st.error(f"Unsupported AutoDISE file type: {st.session_state.hvac_file_type}")
         st.stop()
 
     # Coerce numeric hour columns
-    hvac_df_numeric = pd.read_csv(io.BytesIO(st.session_state["hvac_file"]))
     for c in tidy_hvac.columns:
         if str(c).strip().isdigit():
             tidy_hvac[c] = pd.to_numeric(tidy_hvac[c], errors="coerce")
@@ -834,12 +939,15 @@ if (st.session_state["hvac_file"] is not None and
     # Add true/false column for window unit compatibility
     targets["Window Unit Compatibility"] = True
 
-    # Read catalog
-    catalog_buf = io.BytesIO(st.session_state["catalog_file"])
-    catalog = pd.read_csv(catalog_buf)
+    # Read ECU catalog
+    if st.session_state.ecu_file_type == "csv":
+        catalog_buf = io.BytesIO(st.session_state["catalog_file"])
+        catalog = pd.read_csv(catalog_buf)
+    elif st.session_state.ecu_file_type == "xlsx":
+        catalog = pd.read_excel(st.session_state["catalog_file"])
 
     # Normalize catalog column names (best-effort)
-    expected_cols = ["Model", "CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size"]
+    expected_cols = ["Model", "CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size", "Window Mount"]
     lower = {c.lower(): c for c in catalog.columns}
 
     def pick(*cands):
@@ -851,15 +959,17 @@ if (st.session_state["hvac_file"] is not None and
     mappings = {
         "Model": pick("model", "name", "sku", "unit (ecu)"),
         "CapacityBTU": pick("capacity_btu", "capacity (btu/hr)", "capacity", "cooling capacity (btu/hr)"),
-        "PowerKW": pick("power_kw", "kw", "power (kw)", "power", "cooling load (kva)"),
+        "PowerKW": pick("power_kw", "kw", "power (kw)", "power", "cooling load (kva)", "cooling load (kw)"),
         "CostUSD": pick("cost_usd", "cost", "price_usd", "price", "cost"),
         "Weight": pick("weight", "mass", "weight (lbs)"),
-        "Size": pick("size", "volume", "size (ft3)")
+        "Size": pick("size", "volume", "size (ft3)"),
+        "Window Mount": pick("window mount", "window mountable", "window")
     }
 
     missing = [k for k, v in mappings.items() if v is None]
     if missing:
-        st.error(f"Catalog is missing columns or unrecognized names. Detected columns: {list(catalog.columns)}")
+        st.error(f"Catalog is missing columns or unrecognized names. Detected columns: {list(catalog.columns)} \n"
+                 f"Catalog is missing the following columns: {list(missing)}")
         st.stop()
 
     catalog = catalog.rename(columns={v: k for k, v in mappings.items()})
@@ -883,10 +993,8 @@ if (st.session_state["hvac_file"] is not None and
     # Display targets
     with col1:
         st.markdown(
-            "### Target BTU and Window Compatibility "
-            '<span style="color:gray;" title="These are the maximum BTU loads for each shelter. '
-            'These values are extracted from the file you uploaded from AutoDISE.">ⓘ</span>',
-            unsafe_allow_html=True
+            "### Target BTU and Window Compatibility",
+            help="These values are extracted from the file you uploaded from AutoDISE."
         )
         st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
         targets = st.data_editor(targets, 
@@ -898,7 +1006,7 @@ if (st.session_state["hvac_file"] is not None and
                                          help="Name of the shelter.",
                                          max_chars=50,
                                          required=True,
-                                         #  pinned=True,  # TODO: uncomment
+                                         pinned=True, 
                                          validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
                                      ),
                                      "TargetBTU": st.column_config.NumberColumn(
@@ -920,9 +1028,8 @@ if (st.session_state["hvac_file"] is not None and
 
     # Load and show generator specs
     st.markdown(
-        "### Generator Catalog "
-        '<span style="color:gray;" title="These are all the generators loaded into the tool.">ⓘ</span>',
-        unsafe_allow_html=True
+        "### Generator Catalog",
+        help="These are all the generators loaded into the tool."
     )
     st.markdown(
         """
@@ -949,7 +1056,6 @@ if (st.session_state["hvac_file"] is not None and
                                          help="Name of the generator",
                                          max_chars=50,
                                          required=True,
-                                         #  pinned=True,  # TODO: uncomment
                                          validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
                                      ),
                                      "Model": st.column_config.TextColumn(
@@ -1041,11 +1147,9 @@ if (st.session_state["hvac_file"] is not None and
 
         # Fuel consumption
         st.markdown(
-            "### Fuel Consumption Metrics "
-            '<span style="color:gray;" title="These values are all calculated using only the maximum electrical load ' \
-            'from the ECUs. '
-            'No additional electrical loads are plugged into the generators.">ⓘ</span>',
-            unsafe_allow_html=True
+            "### Fuel Consumption Metrics",
+            help="These values are all calculated using only the maximum electrical load from the ECUs. \
+                No additional electrical loads are plugged into the generators."
         )
         st.markdown("Only generators that were capable of handling the electrical load of the ECUs are shown.")
         fuel_result_df = calc_fuel(sol_df, gen_spec_df)
@@ -1054,8 +1158,8 @@ if (st.session_state["hvac_file"] is not None and
         display_df = fuel_result_df.dropna(how='all').copy()
         display_df.columns = [f"{shelter} - {metric}" for shelter, metric in display_df.columns]
         st.dataframe(display_df.round(2), 
-                    #  use_container_width=True,
-                     width="stretch")
+                     width="stretch" 
+                     )
 
         # ---------------------
         # Plotting area
@@ -1169,7 +1273,7 @@ if (st.session_state["hvac_file"] is not None and
 else:
     st.info("Upload your AutoDISE file and ECU catalog to continue.")
 
-st.markdown("---")
+st.divider()
 
 # ---------------------
 # User guide download
@@ -1181,12 +1285,11 @@ with open(guide_path, "rb") as f:
 with col8:
     st.download_button(
         label="Click here to download the user guide (PDF)",
-        icon="📘",  # TODO: Uncomment
+        icon="📘", 
         data=guide_bytes,
         file_name="ECU_App_User_Guide.pdf",
         mime="application/octet-stream",
-        # use_container_width=True,
-        width="stretch"
+        width="stretch" 
     )
 
 # ---------------------
@@ -1259,20 +1362,23 @@ Environmental Control Units (ECUs) for the Marine Corps are.
 2. :blue[**Problem Formulation**]
 """
     )
-    st.download_button(
-        "Click here to download the problem formulation sheet",
-        data=formulation_bytes,
-        file_name="ECU_Optimization_Formulation.pdf",
-        mime="application/pdf",
-        type="primary",
-        help="PDF file"
-    )
+    col_spacer, col_button = st.columns((0.01, 0.99))
+    with col_button:
+        st.download_button(
+            "Click here to download the problem formulation sheet",
+            data=formulation_bytes,
+            file_name="ECU_Optimization_Formulation.pdf",
+            mime="application/pdf",
+            type="secondary",
+            help="Download PDF file"
+        )
 
-    st.link_button(
-        label="Click here to learn more about Mixed Integer Programming",
-        url="https://www.nvidia.com/en-us/glossary/mixed-integer-programming/",
-        help="Learn more about MIP online"
-    )
+        st.link_button(
+            label="Click here to learn more about Mixed Integer Programming",
+            url="https://www.nvidia.com/en-us/glossary/mixed-integer-programming/",
+            help="Learn more about MIP at nvidia.com",
+            type="secondary"
+        )
 
     st.markdown(
         """
@@ -1314,3 +1420,8 @@ This app was developed by **Captain Deryk Clary**, Operations Research Analyst a
 📧 Contact: *deryk.l.clary.mil(at)usmc.mil*
 """
     )
+
+# Display date last updated (modified) at bottom of page
+timestamp = os.path.getmtime("ecu_app.py")
+date_txt = datetime.fromtimestamp(timestamp).strftime("%B %d, %Y")
+st.caption(f"Last app update: {date_txt}.")
