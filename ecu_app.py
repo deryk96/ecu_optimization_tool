@@ -56,7 +56,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt 
 from matplotlib.ticker import MaxNLocator 
 import zipfile 
-from datetime import datetime 
+from datetime import datetime, timezone
 from pathlib import Path 
 import matplotlib.patches as mpatches 
 import random 
@@ -290,26 +290,30 @@ def optimize_ecu_mix_normalized(
     shelter_names = shelters[shelter_col].astype(str).tolist() 
     S = len(shelter_names) 
 
-    cat = catalog_df[["Model", "CapacityBTU", "PowerKW", "CostUSD", 
-                      "Weight", "Size", "Window Mount"]].copy() 
+    cat = catalog_df[["Model", "CoolingCapacityBTU", "CoolingPowerKW", "HeatingCapacityBTU", 
+                      "HeatingPowerKW", "CostUSD", "Weight", "Size", "Window Mount"]].copy() 
     cat["Model"] = cat["Model"].astype(str) 
     models = cat["Model"].tolist() 
     M = len(models) 
 
-    cap = cat["CapacityBTU"].to_numpy(float) 
-    kw = cat["PowerKW"].to_numpy(float) 
+    cap_cool = cat["CoolingCapacityBTU"].to_numpy(float)
+    kw_cool  = cat["CoolingPowerKW"].to_numpy(float)
+    cap_heat = cat["HeatingCapacityBTU"].to_numpy(float)
+    kw_heat  = cat["HeatingPowerKW"].to_numpy(float)
     cost = cat["CostUSD"].to_numpy(float) 
     wt = cat["Weight"].to_numpy(float) 
     sz = cat["Size"].to_numpy(float) 
 
     # normalize by max (only used in objective) 
+    kw_cool_scale = kw_cool.max() if kw_cool.max() > 0 else 1.0
+    kw_heat_scale = kw_heat.max() if kw_heat.max() > 0 else 1.0
     cost_scale = cost.max() if cost.max() > 0 else 1.0 
-    kw_scale = kw.max() if kw.max() > 0 else 1.0 
     wt_scale = wt.max() if wt.max() > 0 else 1.0 
     sz_scale = sz.max() if sz.max() > 0 else 1.0 
 
+    norm_kw_cool = kw_cool / kw_cool_scale
+    norm_kw_heat = kw_heat / kw_heat_scale
     norm_cost = cost / cost_scale 
-    norm_kw = kw / kw_scale 
     norm_wt = wt / wt_scale 
     norm_sz = sz / sz_scale 
 
@@ -323,19 +327,36 @@ def optimize_ecu_mix_normalized(
 
     n_vars = S * M + S 
 
-    # Objective coefficients 
-    c = np.zeros(n_vars, dtype=float) 
-    for s_idx in range(S): 
-        for m_idx in range(M): 
-            j = idx_x(s_idx, m_idx) 
-            c[j] = (w_cost * norm_cost[m_idx] + 
-                    w_power * norm_kw[m_idx] + 
-                    w_weight * norm_wt[m_idx] + 
-                    w_size * norm_sz[m_idx]) 
-        # normalize excess by target in objective (so solver minimizes fraction overshoot) 
-        target = float(shelters.iloc[s_idx][target_col]) 
-        norm_penalty = (btu_penalty / target) if target > 0 else btu_penalty 
-        c[idx_e(s_idx)] = norm_penalty 
+    # ==============================
+    # Objective Coefficients
+    # ==============================
+    c = np.zeros(n_vars, dtype=float)
+
+    for s_idx in range(S):
+        target = float(shelters.iloc[s_idx][target_col])
+        mode = "Cooling" if target >= 0 else "Heating"
+        target = abs(target)
+
+        # Select correct normalized power set
+        if mode == "Cooling":
+            norm_kw_use = norm_kw_cool
+        else:
+            norm_kw_use = norm_kw_heat
+
+        # Build coefficients for ECU variables
+        for m_idx in range(M):
+            j = idx_x(s_idx, m_idx)
+            c[j] = (
+                w_cost   * norm_cost[m_idx] +
+                w_power  * norm_kw_use[m_idx] +
+                w_weight * norm_wt[m_idx] +
+                w_size   * norm_sz[m_idx]
+            )
+
+        # Normalize penalty by target magnitude (avoid dividing by 0)
+        norm_penalty = (btu_penalty / target) if target > 0 else btu_penalty
+        c[idx_e(s_idx)] = norm_penalty
+
 
     # Build constraints 
     rows = [] 
@@ -343,6 +364,20 @@ def optimize_ecu_mix_normalized(
     # (1) meet demand: -sum cap*x <= -target 
     for s_idx, s_name in enumerate(shelter_names): 
         target = float(shelters.loc[shelters[shelter_col] == s_name, target_col].iloc[0]) 
+
+        # Determine mode
+        if target >= 0:
+            # Cooling mode
+            cap = cap_cool
+            kw  = kw_cool
+            mode = "Cooling"
+        else:
+            # Heating mode
+            cap = cap_heat
+            kw  = kw_heat
+            target = abs(target)
+            mode = "Heating"
+
         row = np.zeros(n_vars) 
         for m_idx in range(M): 
             row[idx_x(s_idx, m_idx)] = -cap[m_idx] 
@@ -350,14 +385,40 @@ def optimize_ecu_mix_normalized(
         ub.append(-target) 
 
     # (2) define excess: sum cap*x - e <= target 
-    for s_idx, s_name in enumerate(shelter_names): 
-        target = float(shelters.loc[shelters[shelter_col] == s_name, target_col].iloc[0]) 
-        row = np.zeros(n_vars) 
-        for m_idx in range(M): 
-            row[idx_x(s_idx, m_idx)] = cap[m_idx] 
-        row[idx_e(s_idx)] = -1.0 
-        rows.append(row) 
-        ub.append(target) 
+    for s_idx, s_name in enumerate(shelter_names):
+        target = float(shelters.loc[shelters[shelter_col] == s_name, target_col].iloc[0])
+        original_target = target
+
+        # Determine mode
+        if target >= 0:
+            # Cooling mode
+            cap = cap_cool
+            kw  = kw_cool
+            mode = "Cooling"
+        else:
+            # Heating mode
+            cap = cap_heat
+            kw  = kw_heat
+            target = abs(target)
+            mode = "Heating"
+
+        # (1) meet demand
+        row1 = np.zeros(n_vars)
+        for m_idx in range(M):
+            row1[idx_x(s_idx, m_idx)] = -cap[m_idx]
+        rows.append(row1)
+        ub.append(-target)
+
+        # (2) define excess
+        row2 = np.zeros(n_vars)
+        for m_idx in range(M):
+            row2[idx_x(s_idx, m_idx)] = cap[m_idx]
+        row2[idx_e(s_idx)] = -1.0
+        rows.append(row2)
+        ub.append(target)
+
+        # Store the mode for reporting later
+        shelters.loc[shelters[shelter_col] == s_name, "Mode"] = mode
 
     # (3) window unit compatibility 
     for s_idx, s_name in enumerate(shelter_names): 
@@ -394,6 +455,20 @@ def optimize_ecu_mix_normalized(
     out_rows = [] 
     for s_idx, s_name in enumerate(shelter_names): 
         target = float(shelters.iloc[s_idx][target_col]) 
+        original_target = target
+        mode = "Cooling" if target >= 0 else "Heating"
+
+        # Select correct normalization and capacity/power arrays
+        if mode == "Cooling":
+            cap = cap_cool
+            kw = kw_cool
+            kw_scale_used = kw_cool_scale
+        else:
+            cap = cap_heat
+            kw = kw_heat
+            kw_scale_used = kw_heat_scale
+            target = abs(target)
+
         mix = {} 
         total_btu = total_kw = total_cost = total_wt = total_sz = 0.0 
         for m_idx, m in enumerate(models): 
@@ -405,31 +480,48 @@ def optimize_ecu_mix_normalized(
                 total_cost += qty * cost[m_idx] 
                 total_wt += qty * wt[m_idx] 
                 total_sz += qty * sz[m_idx] 
-        excess = max(0.0, total_btu - target) 
-        # compute normalized objective (reported) 
-        obj_val = (w_cost * (total_cost / cost_scale) + 
-                   w_power * (total_kw / kw_scale) + 
-                   w_weight * (total_wt / wt_scale) + 
-                   w_size * (total_sz / sz_scale) + 
-                   btu_penalty * (excess / target if target > 0 else 0.0)) 
+        excess = max(0.0, (total_btu - target)) 
+        
+        # ==============================
+        # Objective value calculation
+        # ==============================
+        # Normalize according to the correct mode
+        cost_norm   = total_cost / cost_scale
+        kw_norm     = total_kw / kw_scale_used
+        wt_norm     = total_wt / wt_scale
+        sz_norm     = total_sz / sz_scale
+        penalty_norm = abs(excess / target) if target != 0 else excess
 
-        out_rows.append({ 
-            "Shelter": s_name, 
-            "TargetBTU": target, 
-            "AchievedBTU": total_btu, 
-            "ExcessBTU": excess, 
-            "TotalKW": total_kw, 
-            "TotalCost": total_cost, 
-            "TotalWeight": total_wt, 
-            "TotalSize": total_sz, 
-            "Cost_Norm": w_cost * (total_cost / cost_scale), 
-            "Power_Norm": w_power * (total_kw / kw_scale), 
-            "Weight_Norm": w_weight * (total_wt / wt_scale), 
-            "Size_Norm": w_size * (total_sz / sz_scale), 
-            "Penalty_Norm": btu_penalty * (excess / target if target > 0 else 0.0), 
-            "ObjectiveValue": obj_val, 
-            "ECU_Mix": mix 
-        }) 
+        obj_val = (
+            w_cost   * cost_norm +
+            w_power  * kw_norm +
+            w_weight * wt_norm +
+            w_size   * sz_norm +
+            btu_penalty * penalty_norm
+        )
+
+        # Change Achieved BTU to negative, if appropriate
+        if mode == "Heating": 
+            total_btu = -total_btu
+
+        out_rows.append({
+            "Shelter": s_name,
+            "Mode": mode,
+            "TargetBTU": original_target,
+            "AchievedBTU": total_btu,
+            "ExcessBTU": excess,
+            "TotalKW": total_kw,
+            "TotalCost": total_cost,
+            "TotalWeight": total_wt,
+            "TotalSize": total_sz,
+            "Cost_Norm": w_cost * cost_norm, 
+            "Power_Norm": w_power * kw_norm, 
+            "Weight_Norm": w_weight * wt_norm, 
+            "Size_Norm": w_size * sz_norm, 
+            "Penalty_Norm": btu_penalty * penalty_norm, 
+            "ObjectiveValue": obj_val,
+            "ECU_Mix": mix
+        })
 
     return pd.DataFrame(out_rows)
 
@@ -541,42 +633,24 @@ def plot_temperature_with_hvac(melted, shelter_name, title_suffix=None):
     return fig 
 
 
-def plot_target_vs_achieved(solution_df, melted): 
-    solution = solution_df.copy() 
-    if "TotalBTU" not in solution.columns: 
-        solution["TotalBTU"] = solution["AchievedBTU"] 
+def plot_target_vs_achieved(solution_df): 
+    # if solution_df["Mode"].eq("Heating").all():
+    #     solution_df["TargetBTU"] = -solution_df["TargetBTU"]
+    #     solution_df[""]
+
+    solution_melt = pd.melt(solution_df, id_vars="Shelter",
+                            value_vars=["TargetBTU", "AchievedBTU"],
+                            var_name="Metric", value_name="BTU")
+    category_mapping = {"TargetBTU": "Observed Head Load (BTU)",
+                        "AchievedBTU": "Achieved Heat Load (BTU)"}
+    solution_melt["Metric"] = solution_melt["Metric"].map(category_mapping)
 
     fig, ax = plt.subplots(figsize=(12, 5)) 
 
-    # Compute max HVAC load per shelter from palm_hvac_df 
-    max_loads = ( 
-        melted[melted["RowName"] == "Shelter HVAC Heat Load"] 
-        .groupby("ShelterName")["Value"] 
-        .max() 
-        .reset_index(name="Max_Observed_Load") 
-    ) 
-
-    # Merge solution and max loads 
-    solution = solution.rename(columns={'Shelter': 'ShelterName'}) 
-    comparison_df = max_loads.merge(solution, on="ShelterName") 
-
-    # Reshape for seaborn 
-    comparison_melted = comparison_df.melt( 
-        id_vars="ShelterName", 
-        value_vars=["Max_Observed_Load", "AchievedBTU"], 
-        var_name="Source", 
-        value_name="Max_Load" 
-    ) 
-    name_mapping = { 
-        "Max_Observed_Load": "Observed Head Load (BTU)", 
-        "AchievedBTU": "Achieved Heat Load (BTU)" 
-    } 
-    comparison_melted['Source'] = comparison_melted['Source'].map(name_mapping) 
-
     # Plot with seaborn 
     ax = sns.barplot( 
-        data=comparison_melted, 
-        x="ShelterName", y="Max_Load", hue="Source", 
+        data=solution_melt, 
+        x="Shelter", y="BTU", hue="Metric", 
         palette="muted", dodge=True 
     ) 
 
@@ -586,7 +660,7 @@ def plot_target_vs_achieved(solution_df, melted):
     plt.title("Observed vs. Achieved Heat Load per Shelter") 
     plt.xticks(rotation=45, ha="right") 
     ax.legend(loc="lower left", title_fontsize=9, bbox_to_anchor=(1.01,0.0)) 
-    ax.set_ylim(0, (comparison_melted["Max_Load"].max() + 5000)) 
+    # ax.set_ylim(0, (solution_df["AchievedBTU"].max() + 5000)) 
 
     # Add bar labels, suppress output 
     _ = [ax.bar_label(container, fontsize=10) for container in ax.containers] 
@@ -609,7 +683,7 @@ def plot_solution_metrics(solution_df):
                 hue="Metric", 
                 ax=ax, 
                 palette="muted") 
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right") 
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right") 
     plt.title("Value of Normalized Parameters in Objective Function Per Shelter") 
 
     handles, _ = ax.get_legend_handles_labels() 
@@ -666,7 +740,7 @@ def plot_ecu_mix(solution_df):
               loc="lower left", 
               title_fontsize=9, 
               bbox_to_anchor=(1.01,0.0)) 
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right") 
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right") 
     # Set the y-axis major locator to MaxNLocator with integer=True 
     ax.yaxis.set_major_locator(MaxNLocator(integer=True)) 
 
@@ -759,6 +833,64 @@ def plot_fuel(result_df, generator_name):
     return fig
 
 
+def display_gen_df(gen_df, key):
+    st.session_state["generator_df"] = st.data_editor(gen_df.set_index('Generator Name'),
+                                    num_rows="dynamic",
+                                    key=key,
+                                    column_config={
+                                        "Generator Name": st.column_config.TextColumn(
+                                            help="Name of the generator",
+                                            max_chars=50,
+                                            required=True,
+                                            validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
+                                        ),
+                                        "Model": st.column_config.TextColumn(
+                                            help="Model number",
+                                            max_chars=50,
+                                            validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
+                                        ),
+                                        "TAMCN": st.column_config.TextColumn(
+                                            help="TAMCN",
+                                            max_chars=50,
+                                            validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
+                                        ),
+                                        "Max Power (kW)": st.column_config.NumberColumn(
+                                            help="Maximum power the generator can output in kilowatts.",
+                                            required=True,
+                                            min_value=0,
+                                            max_value=99999,
+                                        ),
+                                        "Fuel Capacity (gal)": st.column_config.NumberColumn(
+                                            help="Capacity of a single fuel tank in gallons.",
+                                            required=True,
+                                            min_value=0,
+                                            max_value=99999,
+                                        ),
+                                        "25% Load": st.column_config.NumberColumn(
+                                            help="Fuel consumption at 25 percent load in gal/hour.",
+                                            min_value=0,
+                                            max_value=99999,
+                                        ),
+                                        "50% Load": st.column_config.NumberColumn(
+                                            help="Fuel consumption at 50 percent load in gal/hour.",
+                                            min_value=0,
+                                            max_value=99999,
+                                        ),
+                                        "75% Load": st.column_config.NumberColumn(
+                                            help="Fuel consumption at 75 percent load in gal/hour.",
+                                            min_value=0,
+                                            max_value=99999,
+                                        ),
+                                        "100% Load": st.column_config.NumberColumn(
+                                            help="Fuel consumption at 100 percent load in gal/hour.",
+                                            required=True,
+                                            min_value=0,
+                                            max_value=99999,
+                                        ),
+                                        "Full Data": None
+                                    }).reset_index()
+
+
 # ---------------------
 # Initialize session_state
 # ---------------------
@@ -767,6 +899,10 @@ if "hvac_file" not in st.session_state:
     st.session_state["hvac_file"] = None
 if "catalog_file" not in st.session_state:
     st.session_state["catalog_file"] = None
+if "generator_df" not in st.session_state:
+    st.session_state["generator_df"] = None
+if "generator_set" not in st.session_state:
+    st.session_state["generator_set"] = "default"
 if "example_scenario" not in st.session_state:
     st.session_state.example_scenario = False
 if "optimized" not in st.session_state:
@@ -779,6 +915,10 @@ if "hvac_file_type" not in st.session_state:
     st.session_state.hvac_file_type = None
 if "ecu_file_type" not in st.session_state:
     st.session_state.ecu_file_type = None
+if "no_sol_shelters" not in st.session_state:
+    st.session_state["no_sol_shelters"] = []
+if "whats_new_dialog_shown" not in st.session_state:
+    st.session_state.whats_new_dialog_shown = False
 
 # ---------------------
 # Other UI Helper Functions
@@ -786,6 +926,7 @@ if "ecu_file_type" not in st.session_state:
 def reset_results():
     st.session_state.optimized = False
     st.session_state.example_scenario = False
+    st.session_state["no_sol_shelters"] = []
 
 def load_random_weights():
     st.session_state["user_weights"] = [random.randint(0, 5) for _ in range(5)]
@@ -794,6 +935,61 @@ def load_random_weights():
 def weight_change():
     st.session_state.optimized = False
 
+# Dialog for uploading custom generator file
+@st.dialog("Upload Custom Generator File")
+def custom_gen():
+    gen_file = st.file_uploader("Upload Custom Generator File:",
+                        type=["csv", "xlsx"],
+                        key="gen")
+    
+    if gen_file is not None:
+        if gen_file.name.endswith(".csv"):
+            try:
+                custom_gen_df = pd.read_csv(gen_file)
+
+            except Exception as e:
+                st.error(f"Error loading generator file: {e}")
+                st.stop()
+        elif gen_file.name.endswith(".xlsx"):
+            try:
+                custom_gen_df = pd.read_excel(gen_file)
+            except Exception as e:
+                st.error(f"Error loading generator file: {e}")
+                st.stop()
+        else:
+            st.error(f"File type {gen_file.name.split(".")[-1]} not accepted by this tool.")
+            st.stop()
+
+    if st.button("Submit"):
+        if gen_file is not None:
+            st.session_state["generator_set"] = "custom"
+            st.session_state["generator_df"] = custom_gen_df
+            reset_results()
+            st.rerun()
+        else:
+            st.warning("Please upload a valid file before clicking submit.")
+        
+
+@st.dialog("🚀 What's New!")
+def show_whats_new_dialog():
+    st.markdown("""
+                ### New Features:
+                - **Custom Generators:** Added ability to upload a file with custom generators.
+                - **E2O Logo:** The E2O logo now shows up in the top left corner of the app.
+                - **No Solution Check:** Sometimes there's just not a good solution for one of the shelters. There's a \
+                check for that now. 
+                    - If no solution is found, the shelter gets removed from the solution data.
+                - **🔥 Heating 🔥:** You're not always operating in 29 Palms in the summer. The app can now optimize for \
+                cold weather conditions.
+                    - With that, there is now a requirement for heating data to be input into the generator \
+                specifications. 
+                    - Don't worry about this if you're just using the default data though. It's pre-loaded.
+                """)
+    
+    if st.button("Got it"):
+        st.session_state.whats_new_dialog_shown = True
+        st.rerun()
+
 
 # ---------------------
 # Streamlit UI
@@ -801,18 +997,27 @@ def weight_change():
 st.set_page_config(layout="wide", page_title="ECU Selection Optimizer")
 st.title("ECU Selection Optimizer")
 
+# Logo display
+logo_path = Path("E2O_logo.png")
+st.logo(logo_path, size="large",
+        link="https://www.cdi.marines.mil/Units/CDD/Marine-Corps-Expeditionary-Energy-Office/")
+
+# Display whats new
+if not st.session_state.whats_new_dialog_shown:
+    show_whats_new_dialog()
+
 st.markdown("""
 Upload your AutoDISE output file and ECU catalog. Then set your weights to the left and press **Optimize**.
 """)
 
 hvac_file = st.file_uploader(
-    "**Upload :green[AutoDISE Output] (.csv or .xls):**",
+    "**Upload :green[AutoDISE Output]:**",
     type=["csv", "xls"],
     key="hvac",
     on_change=reset_results
 )
 catalog_file = st.file_uploader(
-    "**Upload :blue[ECU Specifications File] (.csv or .xlsx):**",
+    "**Upload :blue[ECU Specifications File]:**",
     type=["csv", "xlsx"],
     key="catalog",
     on_change=reset_results
@@ -852,7 +1057,7 @@ if hvac_file is None or catalog_file is None:
         if st.button(
             "Run Example Scenario",
             type="primary",
-            help="This will automatically load the example files found on the left into the tool.",
+            help="This will automatically load example files into the tool and randomize the weights.",
             width="stretch"
         ):
             load_random_weights()
@@ -936,7 +1141,7 @@ if (st.session_state["hvac_file"] is not None and
         st.error(f"Could not extract targets from HVAC file: {e}")
         st.stop()
 
-    # Add true/false column for window unit compatibility
+    # Add true/false column for window unit compatibility (default true)
     targets["Window Unit Compatibility"] = True
 
     # Read ECU catalog
@@ -944,10 +1149,11 @@ if (st.session_state["hvac_file"] is not None and
         catalog_buf = io.BytesIO(st.session_state["catalog_file"])
         catalog = pd.read_csv(catalog_buf)
     elif st.session_state.ecu_file_type == "xlsx":
-        catalog = pd.read_excel(st.session_state["catalog_file"])
+        catalog = pd.read_excel(io.BytesIO(st.session_state["catalog_file"]))
 
-    # Normalize catalog column names (best-effort)
-    expected_cols = ["Model", "CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size", "Window Mount"]
+    # Normalize catalog column names
+    expected_cols = ["Model", "CoolingCapacityBTU", "HeatingCapacityBTU", "CoolingPowerKW", 
+                     "HeatingPowerKW", "CostUSD", "Weight", "Size", "Window Mount"]
     lower = {c.lower(): c for c in catalog.columns}
 
     def pick(*cands):
@@ -958,8 +1164,10 @@ if (st.session_state["hvac_file"] is not None and
 
     mappings = {
         "Model": pick("model", "name", "sku", "unit (ecu)"),
-        "CapacityBTU": pick("capacity_btu", "capacity (btu/hr)", "capacity", "cooling capacity (btu/hr)"),
-        "PowerKW": pick("power_kw", "kw", "power (kw)", "power", "cooling load (kva)", "cooling load (kw)"),
+        "CoolingCapacityBTU": pick("capacity_btu", "capacity (btu/hr)", "capacity", "cooling capacity (btu/hr)"),
+        "HeatingCapacityBTU": pick("heating capacity", "heating capacity (btu/hr)", "capacity heating"),
+        "CoolingPowerKW": pick("power_kw", "kw", "power (kw)", "power", "cooling load (kva)", "cooling load (kw)"),
+        "HeatingPowerKW": pick("heating load (kw)", "heating load", "heating power (kw)", "heating power"),
         "CostUSD": pick("cost_usd", "cost", "price_usd", "price", "cost"),
         "Weight": pick("weight", "mass", "weight (lbs)"),
         "Size": pick("size", "volume", "size (ft3)"),
@@ -975,7 +1183,8 @@ if (st.session_state["hvac_file"] is not None and
     catalog = catalog.rename(columns={v: k for k, v in mappings.items()})
 
     # Coerce numeric
-    for c in ["CapacityBTU", "PowerKW", "CostUSD", "Weight", "Size"]:
+    for c in ["CoolingCapacityBTU", "HeatingCapacityBTU", "CoolingPowerKW", 
+              "HeatingPowerKW", "CostUSD", "Weight", "Size"]:
         catalog[c] = pd.to_numeric(catalog[c], errors="coerce")
 
     # ---------------------
@@ -994,7 +1203,8 @@ if (st.session_state["hvac_file"] is not None and
     with col1:
         st.markdown(
             "### Target BTU and Window Compatibility",
-            help="These values are extracted from the file you uploaded from AutoDISE."
+            help="These are the maximum BTU loads for each shelter. \
+                These values are extracted from the file you uploaded from AutoDISE."
         )
         st.markdown(":red[Action:] Select whether each shelter is compatible with window ECU units.")
         targets = st.data_editor(targets, 
@@ -1026,91 +1236,85 @@ if (st.session_state["hvac_file"] is not None and
         st.markdown("All ECUs loaded from ECU Specifications file uploaded above.")
         st.dataframe(catalog.set_index('Model'))
 
-    # Load and show generator specs
+    ###############################
+    # Load and show generator data
+    ###############################
+    st.divider()
     st.markdown(
         "### Generator Catalog",
-        help="These are all the generators loaded into the tool."
+        help = "Either use default generators (pre-loaded) or upload a custom file \
+            with the 'Upload Custom Generator File' button.",
+        unsafe_allow_html=True
     )
     st.markdown(
         """
-        These generators are loaded from a background file. The 'XX% Load' columns indicate the number of gallons
-        per hour each generator burns at the percentage of electrical load.
+        The default generators are loaded from a background file and can be changed or updated in the table below.
         
-        :blue[Optional:] You can add or subtract generators from the list using the buttons below. \
-        Scroll over each column name for help on what the column is.
+        :blue[Optional:] You can upload a custom generator file using the button below.
         """
     )
-    try:
-        gen_spec_df = pd.read_csv(Path("Inputs/GeneratorSpecs.csv"))
-    except Exception as e:
-        st.error(
-            f"Could not load generator specifications from file. \
-            Please ensure 'GeneratorSpecs.csv' is placed in the Inputs folder on GitHub \
-            or contact the developer. \n\n{e}"
-        )
-        st.stop()
-    gen_spec_df = st.data_editor(gen_spec_df.set_index('Generator Name'),
-                                 num_rows="dynamic",
-                                 column_config={
-                                     "Generator Name": st.column_config.TextColumn(
-                                         help="Name of the generator",
-                                         max_chars=50,
-                                         required=True,
-                                         validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
-                                     ),
-                                     "Model": st.column_config.TextColumn(
-                                         help="Model number",
-                                         max_chars=50,
-                                         validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
-                                     ),
-                                     "TAMCN": st.column_config.TextColumn(
-                                         help="TAMCN",
-                                         max_chars=50,
-                                         validate=r"^[A-Za-z0-9_.\-() ]+$"  # Blocks any unsafe characters
-                                     ),
-                                     "Max Power (kW)": st.column_config.NumberColumn(
-                                         help="Maximum power the generator can output in kilowatts.",
-                                         required=True,
-                                         min_value=0,
-                                         max_value=99999,
-                                     ),
-                                     "Fuel Capacity (gal)": st.column_config.NumberColumn(
-                                         help="Capacity of a single fuel tank in gallons.",
-                                         required=True,
-                                         min_value=0,
-                                         max_value=99999,
-                                     ),
-                                     "25% Load": st.column_config.NumberColumn(
-                                         help="Fuel consumption at 25 percent load in gal/hour.",
-                                         min_value=0,
-                                         max_value=99999,
-                                     ),
-                                     "50% Load": st.column_config.NumberColumn(
-                                         help="Fuel consumption at 50 percent load in gal/hour.",
-                                         min_value=0,
-                                         max_value=99999,
-                                     ),
-                                     "75% Load": st.column_config.NumberColumn(
-                                         help="Fuel consumption at 75 percent load in gal/hour.",
-                                         min_value=0,
-                                         max_value=99999,
-                                     ),
-                                     "100% Load": st.column_config.NumberColumn(
-                                         help="Fuel consumption at 100 percent load in gal/hour.",
-                                         required=True,
-                                         min_value=0,
-                                         max_value=99999,
-                                     ),
-                                     "Full Data": None
-                                 }).reset_index()
+
+    # Initialize center button col
+    _, button_col, _ = st.columns(3)
+
+    # Upload button
+    if st.session_state["generator_set"] == "default":
+            with button_col:
+                if st.button("Upload Custom Generator File", type="secondary", width="stretch",
+                            help="This will open a dialog that allows you to upload a file."):
+                    custom_gen()
+
+    else:
+        with button_col:
+            # Allow user to restore default data
+            if st.button(
+                "Restore Default Generator Data",
+                help="This will restore the default generator data.",
+                type="secondary",
+                width="stretch"
+            ):
+                st.session_state["generator_df"] = None
+                st.session_state["generator_set"] = "default"
+                gen_file = None
+                reset_results()
+                st.rerun()
+
+    # Assign custom generators, if present
+    # if custom_gen_df is not None:
+    #     st.session_state["generator_set"] = "custom"
+    #     st.session_state["generator_df"] = custom_gen_df
+    if st.session_state["generator_df"] is None:
+        try:
+            st.session_state["generator_df"] = pd.read_csv(Path("Inputs/GeneratorSpecs.csv"))
+        except Exception as e:
+            st.error(
+                f"Could not load the default generator specifications from file. \
+                Please ensure 'GeneratorSpecs.csv' is placed in the Inputs folder on GitHub \
+                or contact the developer. \n\n{e}"
+            )
+            st.stop()
+        st.session_state["generator_set"] = "default"
+
+    # st.divider()
+
+    # Display generator dataframe
+    st.markdown("##### Loaded generator data:")
+    display_gen_df(st.session_state["generator_df"], "")
+
     # Assign full data column based on user inputs
     data_columns = ["Max Power (kW)", "Fuel Capacity (gal)", "25% Load", "50% Load", "75% Load", "100% Load"]
-    gen_spec_df["Full Data"] = gen_spec_df[data_columns].notna().all(axis=1)
+    st.session_state["generator_df"]["Full Data"] = st.session_state["generator_df"][data_columns].notna().all(axis=1)
 
     # ---------------------
     # Init Solve Button
     # ---------------------
-    solve_button = st.button("Optimize", type="primary")
+    if st.session_state["generator_df"] is not None:
+        # Assign full data column based on user inputs
+        data_columns = ["Max Power (kW)", "Fuel Capacity (gal)", "25% Load", "50% Load", "75% Load", "100% Load"]
+        st.session_state["generator_df"]["Full Data"] = st.session_state["generator_df"][data_columns].notna().all(axis=1)
+
+        # Init solve button
+        solve_button = st.button("Optimize", type="primary", width="stretch")
 
     # When solve button pressed
     if solve_button:
@@ -1122,9 +1326,22 @@ if (st.session_state["hvac_file"] is not None and
                 st.error(f"Optimization failed: {e}")
                 st.stop()
 
+        # Check that all shelters got a solution
+        st.session_state["no_sol_shelters"] = []
+        for idx, row in sol_df.iterrows():
+            if row["ECU_Mix"] == {}:
+                st.session_state["no_sol_shelters"].append(row["Shelter"])
+                sol_df = sol_df.drop(idx)
+
+        if len(sol_df) == 0:
+            st.error("No shelters received a solution.")
+            st.stop()
+        elif len(st.session_state["no_sol_shelters"]) > 0:
+            st.warning(f"No solution found for the following shelters: {st.session_state["no_sol_shelters"]}.")
+
         # Save results in session_state
         st.session_state["sol_df"] = sol_df
-        st.session_state["fuel_result_df"] = calc_fuel(sol_df, gen_spec_df)
+        st.session_state["fuel_result_df"] = calc_fuel(sol_df, st.session_state["generator_df"])
 
         # Set optimized bool
         st.session_state.optimized = True
@@ -1136,10 +1353,19 @@ if (st.session_state["hvac_file"] is not None and
         sol_df = st.session_state["sol_df"]
         fuel_result_df = st.session_state["fuel_result_df"]
 
-        st.success("Solution success.")
-        st.markdown("---")
+        # Check if any shelters did not receive solution
+        if len(st.session_state["no_sol_shelters"]) == 0:
+            st.success("Solution success.")
+        else:
+            st.success("Partial solution success.")
+
+        st.divider()
+
+        # Solution dataframes display
         st.markdown("### Solution Overview")
-        st.markdown("The ECU_Mix column shows the type and number of ECUs that are optimal based on the user-input weights.")
+        st.markdown("The ECU_Mix column shows the type and number of ECUs " \
+            "that are optimal based on the user-input weights.")
+
         st.dataframe(
             sol_df.drop(["Cost_Norm", "Power_Norm", "Weight_Norm", "Size_Norm", "Penalty_Norm"], axis=1)
             .set_index('Shelter')
@@ -1148,11 +1374,11 @@ if (st.session_state["hvac_file"] is not None and
         # Fuel consumption
         st.markdown(
             "### Fuel Consumption Metrics",
-            help="These values are all calculated using only the maximum electrical load from the ECUs. \
-                No additional electrical loads are plugged into the generators."
+            help="These values are all calculated using only the maximum electrical load \
+                from the ECUs. No additional electrical loads are plugged into the generators."
         )
         st.markdown("Only generators that were capable of handling the electrical load of the ECUs are shown.")
-        fuel_result_df = calc_fuel(sol_df, gen_spec_df)
+        fuel_result_df = calc_fuel(sol_df, st.session_state["generator_df"])
 
         # Show result, drop generators with all na
         display_df = fuel_result_df.dropna(how='all').copy()
@@ -1164,7 +1390,7 @@ if (st.session_state["hvac_file"] is not None and
         # ---------------------
         # Plotting area
         # ---------------------
-        st.markdown("---")
+        st.divider()
         st.subheader("Plots")
 
         # Generator selection
@@ -1182,21 +1408,8 @@ if (st.session_state["hvac_file"] is not None and
                 st.pyplot(fig_fuel)
         fuel_result_df = fuel_result_df.dropna(how='all')  # Drop generators that can't handle the load
 
-        # Melt HVAC data for plotting
-        melted = tidy_hvac.melt(
-            id_vars=["ShelterName", "ECUConfig", "SubTableName", "RowName"],
-            var_name="Time", value_name="Value"
-        ).drop_duplicates(subset=['ShelterName', 'ECUConfig', 'SubTableName', 'RowName', 'Time'])
-
-        # Clean up Time axis
-        melted["Hour"] = melted["Time"].str.extract(r"(\d{2})(?=00)")
-        melted["Hour"] = pd.to_numeric(melted["Hour"], errors="coerce")
-
-        # Clean up value axis
-        melted["Value"] = pd.to_numeric(melted["Value"], errors="coerce")
-
         # Target vs Achieved
-        fig_tva = plot_target_vs_achieved(sol_df, melted)
+        fig_tva = plot_target_vs_achieved(sol_df)
         with col5:
             st.pyplot(fig_tva)
 
@@ -1211,7 +1424,7 @@ if (st.session_state["hvac_file"] is not None and
             st.pyplot(fig_mix)
 
         # ---------------------
-        # Download files
+        # Set up download files
         # ---------------------
         date_str = datetime.now().strftime("%Y%m%d")
         zip_buffer = io.BytesIO()
@@ -1297,50 +1510,50 @@ with col8:
 # ---------------------
 with st.expander(":question: Help"):
     st.markdown(
-        """
-### How To Use This Tool
+    """
+    ### How To Use This Tool
 
-1. :blue[**Upload Your Data**]
-- Upload the *ECU Specifications file*.
-- Upload the *HVAC Analysis file* (must be exported from AutoDISE).
-- :green[Both files should be .csv files before uploading.]
-- :red[If you are new to the tool, you can always click the "Run Example Scenario" button to automatically run the 
-analysis with the example files.]
+    1. :blue[**Upload Your Data**]
+    - Upload the *ECU Specifications file*.
+    - Upload the *HVAC Analysis file* (must be exported from AutoDISE).
+    - :red[If you are new to the tool, you can always click the "Run Example Scenario" button to automatically run the 
+    analysis with the example files.]
 
-2. :blue[**Set Optimization Weights**]
-- Use the sliders in the sidebar to adjust the weight (0–5) of:
-  - **Cost**: The total procurement cost of the ECUs.
-  - **Power**: The total power usage of the ECUs when running.
-  - **Weight**: The total weight of the ECUs.
-  - **Size**: The total size (ft³) of the ECUs.
-  - **BTU Penalty**: Penalty for exceeding shelter heat load requirements.
-- These weights are used to score the prospective mixes of ECUs. The solution becomes the mixture that scores the best 
-for each shelter.
-- :green[A higher number means it is more important to minimize.]
+    2. :blue[**Set Optimization Weights**]
+    - Use the sliders in the sidebar to adjust the weight (0–5) of:
+    - **Cost**: The total procurement cost of the ECUs.
+    - **Power**: The total power usage of the ECUs when running.
+    - **Weight**: The total weight of the ECUs.
+    - **Size**: The total size (ft³) of the ECUs.
+    - **BTU Penalty**: Penalty for exceeding shelter heat load requirements.
+    - These weights are used to score the prospective mixes of ECUs. The solution becomes the mixture that scores the 
+    best for each shelter.
+    - If you don't know, you can always leave the default or click the "Randomize Weights" button.
+    - :green[A higher number means it is more important to minimize.]
 
-3. :blue[**Optimize**]
-- Click the **Optimize** button to run the optimization.
-- The solver will determine the best mix of ECUs to optimally satisfy the shelter heat loads.
+    3. :blue[**Optimize**]
+    - Click the **Optimize** button to run the optimization.
+    - The solver will determine the best mix of ECUs to optimally satisfy the shelter heat loads.
 
-4. :blue[**Review Results**]
-- A per-shelter summary is displayed.
-- The optimal ECU mix for each shelter is shown in the far right column.
+    4. :blue[**Review Results**]
+    - A per-shelter summary is displayed.
+    - The optimal ECU mix for each shelter is shown in the far right column.
 
-5. :blue[**Visualize**]
-- Explore the automatically generated plots:
-  - Fuel consumption by generator
-  - Shelter heat loads (observed vs. achieved)
-  - Objective contributions (cost, power, etc.)
-  - ECU allocations per shelter (number and type of ECU)
+    5. :blue[**Visualize**]
+    - Explore the automatically generated plots:
+    - Fuel consumption by generator
+    - Shelter heat loads (observed vs. achieved)
+    - Objective contributions (cost, power, etc.)
+    - ECU allocations per shelter (number and type of ECU)
 
-6. :blue[**Download**]
-- Export all results as .xlsx files and .png images using the download button at the bottom of the page.
-- All the generated tables will be in separate tabs within a single Excel file.
+    6. :blue[**Download**]
+    - Export all results as .xlsx files and .png images using the download button at the bottom of the page.
+    - All the generated tables will be in separate tabs within a single Excel file.
 
----
-💡 **Tip:** If you don’t have your own data, you can use the example files available for download above or run the 
-example scenario.
-"""
+    ---
+    💡 **Tip:** If you don’t have your own data, you can use the example files available for download above or run the 
+    example scenario.
+    """
     )
 
 # ---------------------
@@ -1353,14 +1566,14 @@ with open(formulation_file, "rb") as f:
 # Information expander
 with st.expander(":information_source: Information"):
     st.markdown(
-        """
-1. :blue[**Goal**]
-- The goal of this tool is to help Capability Integration Officers figure out what the requirements for the future 
-Environmental Control Units (ECUs) for the Marine Corps are.
-- This includes how many BTUs they need to produce and how many should be assigned to each echelon in the USMC.
+    """
+    1. :blue[**Goal**]
+    - The goal of this tool is to help Capability Integration Officers figure out what the requirements for the future 
+    Environmental Control Units (ECUs) for the Marine Corps are.
+    - This includes how many BTUs they need to produce and how many should be assigned to each echelon in the USMC.
 
-2. :blue[**Problem Formulation**]
-"""
+    2. :blue[**Problem Formulation**]
+    """
     )
     col_spacer, col_button = st.columns((0.01, 0.99))
     with col_button:
@@ -1381,30 +1594,32 @@ Environmental Control Units (ECUs) for the Marine Corps are.
         )
 
     st.markdown(
-        """
-3. :blue[**Assumptions**]
-- BTU Algorithm:
-    - The heat load due to electrical equipment in a shelter is simply the total power load of all consumers in that 
-    shelter, in Watts, converted to BTU/hour.
-    - Other assumptions and equations detailed in AutoDISE User Manual (available on the app).
-- Equipment:
-    - Equipment with a max operating temperature/humidity less than the environmental values require climate control.
-    - Power factor = 0.8 for generators, ECUs = 1.0.
-    - Equipment is always turned on day/night.
-    - The fuel consumption rate is calculated via linear interpolation using the electrical load and known fuel burn 
-    rates. Linear assumption is applied between each known load percentage.
+    """
+    3. :blue[**Assumptions**]
+    - BTU Algorithm:
+        - The heat load due to electrical equipment in a shelter is simply the total power load of all consumers in that
+        shelter, in watts, converted to BTU/hour.
+        - Other assumptions and equations detailed in AutoDISE User Manual (available in 
+        [the software](https://autodise.net/Default.aspx?ReturnUrl=%2f)).
+    - Equipment:
+        - Equipment with a max operating temperature/humidity less than the environmental values require climate 
+        control.
+        - Power factor = 0.8 for generators, ECUs = 1.0.
+        - Equipment is always turned on day/night.
+        - The fuel consumption rate is calculated via linear interpolation using the electrical load and known fuel burn
+        rates. Linear assumption is applied between each known load percentage.
 
-4. :blue[**Limitations**]
-- AutoDISE doesn't account for setting up your shelters in the shade.
-- There is an option in AutoDISE to put cammie netting over your shelter; this can mimic shaded environments.
-- Information on actual gear used by different COC echelons varies based on SOP.
-- Acquisition, maintenance, and lifecycle costs of ECUs are not currently accounted for in the cost function due to data 
-availability.
-- You may add any associated costs into the total in the "cost" column of the uploaded ECU specifications file; it will 
-then be accounted for.
-- This tool only optimizes for the maximum BTU load the shelter experiences in the AutoDISE simulation and does not 
-account for the full 24-hour profile due to problem complexity.
-"""
+    4. :blue[**Limitations**]
+    - AutoDISE doesn't account for setting up your shelters in the shade.
+    - There is an option in AutoDISE to put cammie netting over your shelter; this can mimic shaded environments.
+    - Information on actual gear used by different COC echelons varies based on SOP.
+    - Acquisition, maintenance, and lifecycle costs of ECUs are not currently accounted for in the cost function due to 
+    data availability.
+    - You may add any associated costs into the total in the "cost" column of the uploaded ECU specifications file; it 
+    will then be accounted for.
+    - This tool only optimizes for the maximum BTU load the shelter experiences in the AutoDISE simulation and does not 
+    account for the full 24-hour profile due to problem complexity.
+    """
     )
 
 # ---------------------
@@ -1412,16 +1627,38 @@ account for the full 24-hour profile due to problem complexity.
 # ---------------------
 with st.expander("🪖 About The Developer"):
     st.markdown(
-        """
-This app was developed by **Captain Deryk Clary**, Operations Research Analyst at the 
-**USMC Expeditionary Energy Office (E2O)**.
+    """
+    This app was developed by **Captain Deryk Clary**, Operations Research Analyst at the 
+    **USMC Expeditionary Energy Office (E2O)**.
 
-🌐 Website: [USMC E2O](https://www.cdi.marines.mil/Units/CDD/Marine-Corps-Expeditionary-Energy-Office/)  
-📧 Contact: *deryk.l.clary.mil(at)usmc.mil*
-"""
+    🌐 Website: [USMC E2O](https://www.cdi.marines.mil/Units/CDD/Marine-Corps-Expeditionary-Energy-Office/)  
+    📧 Contact: *deryk.l.clary.mil(at)usmc.mil*
+    """
     )
 
-# Display date last updated (modified) at bottom of page
-timestamp = os.path.getmtime("ecu_app.py")
-date_txt = datetime.fromtimestamp(timestamp).strftime("%B %d, %Y")
-st.caption(f"Last app update: {date_txt}.")
+
+# Gets last commit date from git repository when running on Streamlit Community Cloud
+# Cache across reruns and sessions until code changes
+@st.cache_resource
+def get_last_commit_date(branch: str = "main") -> str:
+    try:
+        from git import Repo
+        repo = Repo(search_parent_directories=True)
+        commit = next(repo.iter_commits(branch, max_count=1))
+        # Timezone-aware UTC datetime
+        dt = datetime.fromtimestamp(commit.committed_date, tz=timezone.utc)
+        # Return date only
+        return dt.strftime("%B %d, %Y")
+    except Exception:
+        return None
+
+# Display last app update in Streamlit
+# Different based on whether git info is available
+last_update = get_last_commit_date()
+if last_update is not None:
+    st.caption(f"Last app update: {last_update}")
+else:
+    # Fallback to file modification date
+    timestamp = os.path.getmtime("ecu_app.py")
+    date_txt = datetime.fromtimestamp(timestamp).strftime("%B %d, %Y")
+    st.caption(f"Last app update: {date_txt} (last file save locally).")
