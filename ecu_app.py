@@ -61,7 +61,6 @@ from pathlib import Path
 import matplotlib.patches as mpatches 
 import random 
 from bs4 import BeautifulSoup
-from git import Repo
 
 # MILP tools 
 from scipy.optimize import milp, LinearConstraint, Bounds 
@@ -467,7 +466,6 @@ def optimize_ecu_mix_normalized(
         if mode == "Cooling":
             cap = cap_cool
             kw = kw_cool
-            norm_kw = norm_kw_cool
             kw_scale_used = kw_cool_scale
         else:
             cap = cap_heat
@@ -508,7 +506,8 @@ def optimize_ecu_mix_normalized(
         )
 
         # Change Achieved BTU to negative, if appropriate
-        if mode == "Heating": total_btu = -total_btu
+        if mode == "Heating": 
+            total_btu = -total_btu
 
         out_rows.append({
             "Shelter": s_name,
@@ -953,13 +952,13 @@ def custom_gen():
             try:
                 custom_gen_df = pd.read_csv(gen_file)
 
-            except Exception as E:
+            except Exception as e:
                 st.error(f"Error loading generator file: {e}")
                 st.stop()
         elif gen_file.name.endswith(".xlsx"):
             try:
                 custom_gen_df = pd.read_excel(gen_file)
-            except Exception as E:
+            except Exception as e:
                 st.error(f"Error loading generator file: {e}")
                 st.stop()
         else:
@@ -1361,9 +1360,9 @@ if (st.session_state["hvac_file"] is not None and
 
         # Check if any shelters did not receive solution
         if len(st.session_state["no_sol_shelters"]) == 0:
-            st.success(f"Solution success.")
+            st.success("Solution success.")
         else:
-            st.success(f"Partial solution success.")
+            st.success("Partial solution success.")
 
         st.divider()
 
