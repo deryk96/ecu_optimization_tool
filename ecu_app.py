@@ -470,7 +470,6 @@ def optimize_ecu_mix_normalized(
         else:
             cap = cap_heat
             kw = kw_heat
-            norm_kw = norm_kw_heat
             kw_scale_used = kw_heat_scale
             target = abs(target)
 
