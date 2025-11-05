@@ -370,13 +370,11 @@ def optimize_ecu_mix_normalized(
             # Cooling mode
             cap = cap_cool
             kw  = kw_cool
-            norm_kw = norm_kw_cool
             mode = "Cooling"
         else:
             # Heating mode
             cap = cap_heat
             kw  = kw_heat
-            norm_kw = norm_kw_heat
             target = abs(target)
             mode = "Heating"
 
@@ -396,13 +394,11 @@ def optimize_ecu_mix_normalized(
             # Cooling mode
             cap = cap_cool
             kw  = kw_cool
-            norm_kw = norm_kw_cool
             mode = "Cooling"
         else:
             # Heating mode
             cap = cap_heat
             kw  = kw_heat
-            norm_kw = norm_kw_heat
             target = abs(target)
             mode = "Heating"
 
