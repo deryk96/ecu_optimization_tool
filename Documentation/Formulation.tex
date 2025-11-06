@@ -1,0 +1,75 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\begin{document}
+
+\section*{MILP Formulation for ECU Optimization}
+
+\subsection*{Decision Variables}
+\begin{align*}
+x_{s,m} &\in \mathbb{Z}_{\geq 0} && \text{Number of ECU model $m$ assigned to shelter $s$} \\
+e_s &\in \mathbb{R}_{\geq 0} && \text{Excess BTU capacity for shelter $s$} \\
+\end{align*}
+
+\subsection*{Parameters}
+\begin{align*}
+\text{CoolingCapacity}_m & : \text{Cooling capacity (BTU/hr) of model $m$} \\
+\text{HeatingCapacity}_m & : \text{Heating capacity (BTU/hr) of model $m$} \\
+\text{CoolingPower}_m & : \text{Cooling power consumption (kW) of model $m$} \\
+\text{HeatingPower}_m & : \text{Heating power consumption (kW) of model $m$} \\
+\text{Cost}_m & : \text{Cost (USD) of model $m$} \\
+\text{Weight}_m & : \text{Weight (lbs) of model $m$} \\
+\text{Size}_m & : \text{Size (ft$^3$) of model $m$} \\
+\text{TargetBTU}_s & : \text{BTU requirement of shelter $s$} \\
+w_{\text{cost}}, w_{\text{power}}, w_{\text{weight}}, w_{\text{size}} & : \text{User-defined weights for each metric} \\
+p & : \text{User-defined penalty weight for excess BTU capacity} \\
+\text{Window}_m & : \begin{cases}
+1 & \text{if model $m$ is window-mounted} \\
+0 & \text{otherwise}
+\end{cases} \\
+\text{Compat}_s & : \begin{cases}
+1 & \text{if shelter $s$ accepts window-mounted ECUs} \\
+0 & \text{otherwise}
+\end{cases}
+\end{align*}
+
+\subsection*{Normalization}
+For use \emph{only in the objective function}, each attribute is normalized by dividing by its maximum value across all ECU models:
+\[
+\hat{Value}_m = \frac{Value_m}{\max_j (Value_j)} \quad \in [0,1]
+\]
+This normalization is applied to cost, power, weight, and size.  
+Cooling and heating capacities and power are normalized separately.
+
+\subsection*{Objective Function}
+\[
+\min \quad 
+\sum_{m} x_{s,m} \Big( 
+  w_{\text{cost}} \cdot \hat{\text{Cost}}_m +
+  w_{\text{power}} \cdot \hat{\text{Power}}_m +
+  w_{\text{weight}} \cdot \hat{\text{Weight}}_m +
+  w_{\text{size}} \cdot \hat{\text{Size}}_m
+\Big) 
++ p \cdot e_s 
+\quad \forall s
+\]
+Where:  
+\begin{itemize}
+  \item Cooling mode: \( \hat{\text{Power}}_m \) and \( \hat{\text{Capacity}}_m \) are based on \textbf{cooling} power and capacity.  
+  \item Heating mode: \( \hat{\text{Power}}_m \) and \( \hat{\text{Capacity}}_m \) are based on \textbf{heating} power and capacity.
+\end{itemize}
+
+\subsection*{Constraints}
+\begin{align*}
+\sum_{m} \text{CoolingCapacityBTU}_m \cdot x_{s,m} &\geq \text{TargetBTU}_s && \forall s \quad \text{(Cooling mode: Meet cooling demand)} \\
+\sum_{m} \text{HeatingCapacityBTU}_m \cdot x_{s,m} &\geq \text{TargetBTU}_s && \forall s \quad \text{(Heating mode: Meet heating demand)} \\
+\sum_{m} \text{CoolingCapacityBTU}_m \cdot x_{s,m} - e_s &\leq \text{TargetBTU}_s && \forall s \quad \text{(Cooling mode: Define excess cooling)} \\
+\sum_{m} \text{HeatingCapacityBTU}_m \cdot x_{s,m} - e_s &\leq \text{TargetBTU}_s && \forall s \quad \text{(Heating mode: Define excess heating)} \\
+x_{s,m} &= 0 && \forall s, m \; 
+\substack{\text{when } \text{Compatible}_s = 0 \\ \text{and } \text{Window}_m = 1} 
+\quad \\
+x_{s,m} &\in \mathbb{Z}_{\geq 0} && \forall s, m \\
+e_s &\in \mathbb{R}_{\geq 0} && \forall s \\
+\end{align*}
+
+\end{document}
