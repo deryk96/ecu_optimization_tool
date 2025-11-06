@@ -1,0 +1,34 @@
+stages:
+  - lint
+  - format
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - when: never
+
+ruff_check:
+  stage: lint
+  image: ghcr.io/astral-sh/ruff:latest-alpine # Official Ruff Docker image
+  before_script:
+    - cd $CI_PROJECT_DIR
+    - ruff --version
+  script:
+    - ruff check --output-format=gitlab > code-quality-report.json
+  artifacts:
+    reports:
+      codequality: $CI_PROJECT_DIR/code-quality-report.json
+
+ruff_format_check:
+  stage: format
+  image: ghcr.io/astral-sh/ruff:latest-alpine
+  before_script:
+    - cd $CI_PROJECT_DIR
+    - ruff --version
+  script:
+    - ruff format --diff --check | tee format-check-output.txt # Check for formatting issues without applying them
+  artifacts:
+    paths:
+      - format-check-output.txt
+  allow_failure: true # Allow this job to fail without blocking the pipeline

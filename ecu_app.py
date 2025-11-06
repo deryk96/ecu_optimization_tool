@@ -892,9 +892,8 @@ def display_gen_df(gen_df, key):
 
 
 # ---------------------
-# Initialize session_state
+# Initialize session_state variables
 # ---------------------
-# Initialize files and vars in session_state
 if "hvac_file" not in st.session_state:
     st.session_state["hvac_file"] = None
 if "catalog_file" not in st.session_state:
@@ -925,7 +924,7 @@ if "whats_new_dialog_shown" not in st.session_state:
 # ---------------------
 def reset_results():
     st.session_state.optimized = False
-    st.session_state.example_scenario = False
+    # st.session_state.example_scenario = False # Commented out to fix problem with custom gen file
     st.session_state["no_sol_shelters"] = []
 
 def load_random_weights():
@@ -938,10 +937,26 @@ def weight_change():
 # Dialog for uploading custom generator file
 @st.dialog("Upload Custom Generator File")
 def custom_gen():
+    # Open generator file
+    with open(Path("Inputs/GeneratorSpecs.xlsx"), "rb") as f:
+        gen_bytes = f.read()
+
+    # Give option to download file
+    st.download_button(
+        label="Download Generator Catalog Template",
+        data=gen_bytes,
+        file_name="Generator_Template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        width="stretch"
+    )
+
+    # Show file uploader
     gen_file = st.file_uploader("Upload Custom Generator File:",
                         type=["csv", "xlsx"],
                         key="gen")
     
+    # Load file
     if gen_file is not None:
         if gen_file.name.endswith(".csv"):
             try:
@@ -960,6 +975,7 @@ def custom_gen():
             st.error(f"File type {gen_file.name.split(".")[-1]} not accepted by this tool.")
             st.stop()
 
+    # Submit button actions
     if st.button("Submit"):
         if gen_file is not None:
             st.session_state["generator_set"] = "custom"
@@ -1280,22 +1296,17 @@ if (st.session_state["hvac_file"] is not None and
                 st.rerun()
 
     # Assign custom generators, if present
-    # if custom_gen_df is not None:
-    #     st.session_state["generator_set"] = "custom"
-    #     st.session_state["generator_df"] = custom_gen_df
     if st.session_state["generator_df"] is None:
         try:
-            st.session_state["generator_df"] = pd.read_csv(Path("Inputs/GeneratorSpecs.csv"))
+            st.session_state["generator_df"] = pd.read_excel(Path("Inputs/GeneratorSpecs.xlsx"))
         except Exception as e:
             st.error(
                 f"Could not load the default generator specifications from file. \
-                Please ensure 'GeneratorSpecs.csv' is placed in the Inputs folder on GitHub \
+                Please ensure 'GeneratorSpecs.xlsx' is placed in the Inputs folder on GitHub \
                 or contact the developer. \n\n{e}"
             )
             st.stop()
         st.session_state["generator_set"] = "default"
-
-    # st.divider()
 
     # Display generator dataframe
     st.markdown("##### Loaded generator data:")
@@ -1516,16 +1527,18 @@ with st.expander(":question: Help"):
     1. :blue[**Upload Your Data**]
     - Upload the *ECU Specifications file*.
     - Upload the *HVAC Analysis file* (must be exported from AutoDISE).
+    - (Optional): Upload a custom generator catalog by clicking **Upload Custom Generator File**.
     - :red[If you are new to the tool, you can always click the "Run Example Scenario" button to automatically run the 
     analysis with the example files.]
+    - Example files can be downloaded using their respective download buttons above.
 
     2. :blue[**Set Optimization Weights**]
     - Use the sliders in the sidebar to adjust the weight (0–5) of:
-    - **Cost**: The total procurement cost of the ECUs.
-    - **Power**: The total power usage of the ECUs when running.
-    - **Weight**: The total weight of the ECUs.
-    - **Size**: The total size (ft³) of the ECUs.
-    - **BTU Penalty**: Penalty for exceeding shelter heat load requirements.
+        - **Cost**: The total procurement cost of the ECUs.
+        - **Power**: The total power usage of the ECUs when running.
+        - **Weight**: The total weight of the ECUs.
+        - **Size**: The total size (ft³) of the ECUs.
+        - **BTU Penalty**: Penalty for exceeding shelter HVAC load requirements.
     - These weights are used to score the prospective mixes of ECUs. The solution becomes the mixture that scores the 
     best for each shelter.
     - If you don't know, you can always leave the default or click the "Randomize Weights" button.
@@ -1533,7 +1546,7 @@ with st.expander(":question: Help"):
 
     3. :blue[**Optimize**]
     - Click the **Optimize** button to run the optimization.
-    - The solver will determine the best mix of ECUs to optimally satisfy the shelter heat loads.
+    - The solver will determine the best mix of ECUs to optimally satisfy the shelter heating or cooling loads.
 
     4. :blue[**Review Results**]
     - A per-shelter summary is displayed.
@@ -1541,10 +1554,10 @@ with st.expander(":question: Help"):
 
     5. :blue[**Visualize**]
     - Explore the automatically generated plots:
-    - Fuel consumption by generator
-    - Shelter heat loads (observed vs. achieved)
-    - Objective contributions (cost, power, etc.)
-    - ECU allocations per shelter (number and type of ECU)
+        - Fuel consumption by generator
+        - Shelter heat loads (observed vs. achieved)
+        - Objective contributions (cost, power, etc.)
+        - ECU allocations per shelter (number and type of ECU)
 
     6. :blue[**Download**]
     - Export all results as .xlsx files and .png images using the download button at the bottom of the page.
